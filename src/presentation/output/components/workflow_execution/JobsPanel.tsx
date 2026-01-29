@@ -4,6 +4,7 @@ import { Box, Text } from "ink";
 import { type RunStatus, StatusIcon } from "./StatusIcon.tsx";
 import type { JobRunData } from "../../workflow_run_output.tsx";
 import { calculateScrollWindow } from "../../hooks/mod.ts";
+import { formatDuration } from "../../utils/duration_formatter.ts";
 import type { PendingDep } from "./WorkflowExecutionUI.tsx";
 
 /**
@@ -63,7 +64,9 @@ function JobItem(
         {job.status === "running"
           ? "  running"
           : job.status === "succeeded" || job.status === "failed"
-          ? job.duration !== undefined ? ` (${job.duration}ms)` : ""
+          ? job.duration !== undefined
+            ? ` (${formatDuration(job.duration)})`
+            : ""
           : job.status === "pending"
           ? " pending"
           : job.status === "skipped"

@@ -36,7 +36,7 @@
 
 These are the policies for upholding our community’s standards of conduct. If
 you feel that a thread needs moderation, please inform an admin on
-[Discord](https://discord.com/invite/system-init) or email
+[Discord](https://discord.com/invite/swamp-club) or email
 <code_of_conduct@systeminit.com>.
 
 The team at System Initiative is repsonsible for community moderation.
@@ -78,9 +78,8 @@ about cool technology. You will find that people will be eager to assume good
 intent and forgive as long as you earn their trust.
 
 The enforcement policies listed above apply to all official System Initiative
-venues; including [Discord channels](https://discord.com/invite/system-init),
-all repositories owned by this GitHub organization, and all other public
-mediums.
+venues; including [Discord channels](https://discord.com/invite/swamp-club), all
+repositories owned by this GitHub organization, and all other public mediums.
 
 _Adapted from the
 [Rust Code of Conduct](https://www.rust-lang.org/policies/code-of-conduct)_

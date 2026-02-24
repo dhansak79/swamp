@@ -131,6 +131,26 @@ export function toAbsolutePath(repoDir: string, relativePath: string): string {
 }
 
 /**
+ * Returns the user-level swamp data directory (`~/.swamp/`).
+ *
+ * This directory stores operational data like auth credentials, installed
+ * binaries, and downloaded source code. Distinct from the XDG config
+ * directory which stores identity configuration.
+ *
+ * @returns The absolute path to the ~/.swamp directory
+ * @throws Error if HOME environment variable is not set
+ */
+export function getSwampDataDir(): string {
+  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
+  if (!home) {
+    throw new Error(
+      "Cannot determine home directory (HOME/USERPROFILE not set)",
+    );
+  }
+  return join(home, ".swamp");
+}
+
+/**
  * Returns the user-level swamp configuration directory.
  *
  * Follows the XDG Base Directory specification:

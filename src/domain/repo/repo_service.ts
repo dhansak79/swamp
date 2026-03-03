@@ -995,7 +995,7 @@ ${body}`;
   }
 
   /**
-   * Generates the content for Kiro's .kiro/hooks/swamp-audit.json.
+   * Generates the content for Kiro's .kiro/hooks/swamp-audit.kiro.hook.
    * Uses the absolute path to the swamp binary because kiro-cli does not
    * perform PATH resolution when executing hook commands.
    */
@@ -1005,10 +1005,11 @@ ${body}`;
       name: "Swamp Audit",
       description: "Records agent tool usage for swamp audit tracking",
       version: "1",
-      when: { type: "postToolUse" },
+      when: { type: "postToolUse", toolTypes: ["*"] },
       then: {
         type: "runCommand",
         command: `"${swampBin}" audit record --from-hook --tool kiro`,
+        timeout: 5,
       },
     };
     return JSON.stringify(hook, null, 2) + "\n";
@@ -1037,12 +1038,17 @@ ${body}`;
   }
 
   /**
-   * Creates .kiro/hooks/swamp-audit.json if it doesn't already exist.
+   * Creates .kiro/hooks/swamp-audit.kiro.hook if it doesn't already exist.
    */
   private createKiroHooksIfNotExists(
     repoPath: RepoPath,
   ): Promise<boolean> {
-    const hookPath = join(repoPath.value, ".kiro", "hooks", "swamp-audit.json");
+    const hookPath = join(
+      repoPath.value,
+      ".kiro",
+      "hooks",
+      "swamp-audit.kiro.hook",
+    );
     return this.createFileIfNotExists(
       hookPath,
       this.generateKiroHookContent(),
@@ -1050,10 +1056,28 @@ ${body}`;
   }
 
   /**
-   * Updates .kiro/hooks/swamp-audit.json, always overwriting with latest content.
+   * Updates .kiro/hooks/swamp-audit.kiro.hook, always overwriting with latest content.
+   * Also removes the old swamp-audit.json hook file if it exists.
    */
-  private updateKiroHooks(repoPath: RepoPath): Promise<boolean> {
-    const hookPath = join(repoPath.value, ".kiro", "hooks", "swamp-audit.json");
+  private async updateKiroHooks(repoPath: RepoPath): Promise<boolean> {
+    // Remove old .json hook file if it exists
+    const oldHookPath = join(
+      repoPath.value,
+      ".kiro",
+      "hooks",
+      "swamp-audit.json",
+    );
+    try {
+      await Deno.remove(oldHookPath);
+    } catch {
+      // not found, ignore
+    }
+    const hookPath = join(
+      repoPath.value,
+      ".kiro",
+      "hooks",
+      "swamp-audit.kiro.hook",
+    );
     return this.overwriteIfChanged(hookPath, this.generateKiroHookContent());
   }
 

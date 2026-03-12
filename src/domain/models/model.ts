@@ -250,6 +250,13 @@ export interface MethodContext {
     tags?: Record<string, string>;
     resolvedVarySuffix?: string;
   }>;
+
+  /** Check names to skip during pre-flight checks. */
+  skipCheckNames?: string[];
+  /** Skip checks that have any of these labels. */
+  skipCheckLabels?: string[];
+  /** Skip all pre-flight checks. */
+  skipAllChecks?: boolean;
 }
 
 /**
@@ -416,6 +423,33 @@ export function inferMethodKind(
 }
 
 /**
+ * Result of a pre-flight check execution.
+ */
+export interface CheckResult {
+  pass: boolean;
+  errors?: string[];
+}
+
+/**
+ * Definition of a pre-flight check on a model.
+ * Checks run automatically before mutating method execution.
+ */
+export interface CheckDefinition {
+  description: string;
+  labels?: string[];
+  appliesTo?: string[];
+  execute(context: MethodContext): Promise<CheckResult>;
+}
+
+/**
+ * Returns true if the method kind is mutating (create/update/delete/action/undefined).
+ * Read and list methods are non-mutating.
+ */
+export function isMutatingKind(kind: MethodKind | undefined): boolean {
+  return kind !== "read" && kind !== "list";
+}
+
+/**
  * Definition of a model method.
  */
 export interface MethodDefinition<
@@ -514,6 +548,12 @@ export interface ModelDefinition<
   methods: Record<string, MethodDefinition>;
 
   /**
+   * Pre-flight checks that run before mutating method execution.
+   * Keys are check names, values are check definitions.
+   */
+  checks?: Record<string, CheckDefinition>;
+
+  /**
    * Ordered list of upgrade functions for migrating definitions between versions.
    * Each entry transforms attributes from the previous version to `toVersion`.
    * Must be ordered chronologically by `toVersion`.
@@ -589,17 +629,19 @@ export class ModelRegistry {
   }
 
   /**
-   * Extends an existing model with additional methods.
+   * Extends an existing model with additional methods and/or checks.
    * Creates a new merged ModelDefinition (immutable — doesn't mutate the existing object).
    *
    * @param type - The model type to extend (raw or normalized)
    * @param methods - Additional methods to add
+   * @param checks - Optional additional checks to add
    * @throws If the target type is not registered
-   * @throws If any method name conflicts with existing methods
+   * @throws If any method or check name conflicts with existing ones
    */
   extend(
     type: string | ModelType,
     methods: Record<string, MethodDefinition>,
+    checks?: Record<string, CheckDefinition>,
   ): void {
     const modelType = typeof type === "string" ? ModelType.create(type) : type;
     const key = modelType.normalized;
@@ -618,10 +660,24 @@ export class ModelRegistry {
       }
     }
 
+    // Check for check name conflicts
+    if (checks) {
+      for (const checkName of Object.keys(checks)) {
+        if (existing.checks?.[checkName]) {
+          throw new Error(
+            `Check '${checkName}' already exists on model type '${key}'`,
+          );
+        }
+      }
+    }
+
     // Create a new merged ModelDefinition (immutable)
     const merged: ModelDefinition = {
       ...existing,
       methods: { ...existing.methods, ...methods },
+      ...(checks || existing.checks
+        ? { checks: { ...(existing.checks ?? {}), ...(checks ?? {}) } }
+        : {}),
     };
 
     this.models.set(key, merged);

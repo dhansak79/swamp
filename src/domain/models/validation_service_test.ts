@@ -154,13 +154,15 @@ Deno.test("validateModel with valid definition returns 3 passing results", async
 
   const results = await service.validateModel(definition, testExprModel);
 
-  assertEquals(results.length, 3);
+  assertEquals(results.length, 4);
   assertEquals(results[0].name, "Definition schema");
   assertEquals(results[0].passed, true);
   assertEquals(results[1].name, "Global arguments");
   assertEquals(results[1].passed, true);
   assertEquals(results[2].name, "Method arguments");
   assertEquals(results[2].passed, true);
+  assertEquals(results[3].name, "Check selection");
+  assertEquals(results[3].passed, true);
 });
 
 Deno.test("validateModel with invalid method arguments returns failing result", async () => {
@@ -173,7 +175,7 @@ Deno.test("validateModel with invalid method arguments returns failing result", 
 
   const results = await service.validateModel(definition, testExprModel);
 
-  assertEquals(results.length, 3);
+  assertEquals(results.length, 4);
   assertEquals(results[0].name, "Definition schema");
   assertEquals(results[0].passed, true);
   assertEquals(results[2].name, "Method arguments");
@@ -191,10 +193,11 @@ Deno.test("validateModel with empty message passes when schema allows it", async
 
   const results = await service.validateModel(definition, testExprModel);
 
-  assertEquals(results.length, 3);
+  assertEquals(results.length, 4);
   assertEquals(results[0].passed, true);
   assertEquals(results[1].passed, true);
   assertEquals(results[2].passed, true);
+  assertEquals(results[3].passed, true);
 });
 
 Deno.test("validateModel runs validations in parallel", async () => {
@@ -214,7 +217,7 @@ Deno.test("validateModel runs validations in parallel", async () => {
   const allResults = await Promise.all(promises);
 
   for (const results of allResults) {
-    assertEquals(results.length, 3);
+    assertEquals(results.length, 4);
     assertEquals(results.every((r) => r.passed), true);
   }
 });
@@ -423,8 +426,8 @@ Deno.test("validateModel without definitionRepo skips expression validation", as
   // No definitionRepo provided - expression validation should be skipped
   const results = await service.validateModel(definition, testExprModel);
 
-  // Should only have definition schema and definition attributes validations
-  assertEquals(results.length, 3);
+  // Should only have definition schema, global arguments, method arguments, and check selection
+  assertEquals(results.length, 4);
   assertEquals(results.every((r) => r.name !== "Expression paths"), true);
 });
 
@@ -982,4 +985,460 @@ Deno.test("validateModel passes for data.latest expression", async () => {
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
+});
+
+// ---------- Check Validation Tests ----------
+
+import type { CheckValidationContext } from "./validation_service.ts";
+import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { generateDataId } from "../data/data_id.ts";
+import { createDefinitionId } from "../definitions/definition.ts";
+
+function createMockDataRepo(): UnifiedDataRepository {
+  return {
+    findAllGlobal: () => Promise.resolve([]),
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve([]),
+    save: () => Promise.resolve({ version: 1 }),
+    append: () => Promise.resolve(),
+    stream: async function* () {},
+    getContent: () => Promise.resolve(null),
+    delete: () => Promise.resolve(),
+    removeLatestMarker: () => Promise.resolve(),
+    nextId: () => generateDataId(),
+    getPath: () => "",
+    getContentPath: () => "",
+    collectGarbage: () =>
+      Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+    allocateVersion: () =>
+      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+    finalizeVersion: () =>
+      Promise.resolve({ size: 0, checksum: "mock-checksum" }),
+    getLatestVersionSync: () => null,
+    findByNameSync: () => null,
+    listVersionsSync: () => [],
+    getContentSync: () => null,
+    findAllForModelSync: () => [],
+    rename: () => {
+      throw new Error("not implemented");
+    },
+  };
+}
+
+function createCheckContext(
+  overrides?: Partial<CheckValidationContext>,
+): CheckValidationContext {
+  return {
+    repoDir: "/tmp",
+    dataRepository: createMockDataRepo(),
+    definitionRepository: {
+      findById: () => Promise.resolve(null),
+      findAll: () => Promise.resolve([]),
+      findByName: () => Promise.resolve(null),
+      findByNameGlobal: () => Promise.resolve(null),
+      findAllGlobal: () => Promise.resolve([]),
+      save: () => Promise.resolve(),
+      delete: () => Promise.resolve(),
+      nextId: () => createDefinitionId(crypto.randomUUID()),
+      getPath: () => "",
+    },
+    ...overrides,
+  };
+}
+
+Deno.test("validateModel with no checks returns existing validations only", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    undefined,
+    createCheckContext(),
+  );
+
+  // testExprModel has no checks, so no Check: results
+  assertEquals(results.filter((r) => r.name.startsWith("Check:")).length, 0);
+});
+
+const testModelWithChecks: ModelDefinition = {
+  type: ModelType.create("test/with-checks"),
+  version: "2026.02.09.1",
+  globalArguments: z.object({ message: z.string() }),
+  methods: {
+    create: {
+      description: "Create",
+      arguments: z.object({}),
+      execute: () => Promise.resolve({}),
+    },
+  },
+  checks: {
+    "always-pass": {
+      description: "Always passes",
+      labels: ["offline"],
+      execute: () => Promise.resolve({ pass: true }),
+    },
+    "always-fail": {
+      description: "Always fails",
+      labels: ["api"],
+      appliesTo: ["create"],
+      execute: () =>
+        Promise.resolve({ pass: false, errors: ["Something wrong"] }),
+    },
+  },
+};
+
+Deno.test("validateModel with passing check adds pass result", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  const model: ModelDefinition = {
+    ...testModelWithChecks,
+    checks: {
+      "my-check": {
+        description: "Always passes",
+        execute: () => Promise.resolve({ pass: true }),
+      },
+    },
+  };
+
+  const results = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext(),
+  );
+
+  const checkResult = results.find((r) => r.name === "Check: my-check");
+  assertEquals(checkResult?.passed, true);
+});
+
+Deno.test("validateModel with failing check adds fail result", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  const model: ModelDefinition = {
+    ...testModelWithChecks,
+    checks: {
+      "bad-check": {
+        description: "Always fails",
+        execute: () =>
+          Promise.resolve({ pass: false, errors: ["Error A", "Error B"] }),
+      },
+    },
+  };
+
+  const results = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext(),
+  );
+
+  const checkResult = results.find((r) => r.name === "Check: bad-check");
+  assertEquals(checkResult?.passed, false);
+  assertStringIncludes(checkResult?.error ?? "", "Error A");
+  assertStringIncludes(checkResult?.error ?? "", "Error B");
+});
+
+Deno.test("validateModel check label filtering", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+    undefined,
+    createCheckContext({ labels: ["offline"] }),
+  );
+
+  const checkNames = results.filter((r) => r.name.startsWith("Check:")).map((
+    r,
+  ) => r.name);
+  assertEquals(checkNames.includes("Check: always-pass"), true);
+  assertEquals(checkNames.includes("Check: always-fail"), false);
+});
+
+Deno.test("validateModel check method filtering", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  // always-fail has appliesTo: ["create"], so filtering by "delete" should skip it
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+    undefined,
+    createCheckContext({ method: "delete" }),
+  );
+
+  const checkNames = results.filter((r) => r.name.startsWith("Check:")).map((
+    r,
+  ) => r.name);
+  assertEquals(checkNames.includes("Check: always-pass"), true);
+  assertEquals(checkNames.includes("Check: always-fail"), false);
+});
+
+Deno.test("validateModel no checkContext provided skips checks", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  // No checkContext — checks should not run
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+  );
+
+  const checkResults = results.filter((r) => r.name.startsWith("Check:"));
+  assertEquals(checkResults.length, 0);
+});
+
+// ---------- Check Selection Validation Tests ----------
+
+Deno.test("validateModel check selection passes when no selection set", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+  );
+
+  const selResult = results.find((r) => r.name === "Check selection");
+  assertEquals(selResult?.passed, true);
+});
+
+Deno.test("validateModel check selection passes for valid require list", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    checks: { require: ["always-pass"] },
+  });
+
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+  );
+
+  const selResult = results.find((r) => r.name === "Check selection");
+  assertEquals(selResult?.passed, true);
+});
+
+Deno.test("validateModel check selection fails for nonexistent required check", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    checks: { require: ["nonexistent-check"] },
+  });
+
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+  );
+
+  const selResult = results.find((r) => r.name === "Check selection");
+  assertEquals(selResult?.passed, false);
+  assertStringIncludes(selResult?.error ?? "", "nonexistent-check");
+  assertStringIncludes(selResult?.error ?? "", "not found");
+});
+
+Deno.test("validateModel check selection fails for nonexistent skipped check", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    checks: { skip: ["nonexistent-check"] },
+  });
+
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+  );
+
+  const selResult = results.find((r) => r.name === "Check selection");
+  assertEquals(selResult?.passed, false);
+  assertStringIncludes(selResult?.error ?? "", "nonexistent-check");
+  assertStringIncludes(selResult?.error ?? "", "not found");
+});
+
+Deno.test("validateModel check selection warns on require+skip overlap", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    checks: { require: ["always-pass"], skip: ["always-pass"] },
+  });
+
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+  );
+
+  const selResult = results.find((r) => r.name === "Check selection");
+  assertEquals(selResult?.passed, false);
+  assertStringIncludes(selResult?.error ?? "", "both require and skip");
+});
+
+Deno.test("validateModel check selection passes for valid skip list", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    checks: { skip: ["always-fail"] },
+  });
+
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+  );
+
+  const selResult = results.find((r) => r.name === "Check selection");
+  assertEquals(selResult?.passed, true);
+});
+
+Deno.test("validateModel definition-level skip excludes check from validate run", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    checks: { skip: ["always-fail"] },
+  });
+
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+    undefined,
+    createCheckContext(),
+  );
+
+  const checkNames = results.filter((r) => r.name.startsWith("Check:")).map((
+    r,
+  ) => r.name);
+  // always-fail is skipped by definition, always-pass should run
+  assertEquals(checkNames.includes("Check: always-pass"), true);
+  assertEquals(checkNames.includes("Check: always-fail"), false);
+});
+
+Deno.test("validateModel check selection on model without checks", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    checks: { require: ["nonexistent"] },
+  });
+
+  // testExprModel has no checks defined
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+  );
+
+  const selResult = results.find((r) => r.name === "Check selection");
+  assertEquals(selResult?.passed, false);
+  assertStringIncludes(selResult?.error ?? "", "nonexistent");
+});
+
+Deno.test("validateModel skips checks with appliesTo when no method specified", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  // always-fail has appliesTo: ["create"], so without --method it should be skipped
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+    undefined,
+    createCheckContext(), // no method specified
+  );
+
+  const checkResults = results.filter((r) => r.name.startsWith("Check:"));
+  // always-pass has no appliesTo → runs; always-fail has appliesTo → skipped
+  assertEquals(checkResults.length, 1);
+  assertEquals(checkResults[0].name, "Check: always-pass");
+  assertEquals(checkResults[0].passed, true);
+});
+
+Deno.test("validateModel handles check returning invalid result", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  const model: ModelDefinition = {
+    ...testModelWithChecks,
+    checks: {
+      "bad-check": {
+        description: "Returns garbage",
+        execute: () =>
+          Promise.resolve(undefined as unknown as { pass: boolean }),
+      },
+    },
+  };
+
+  const results = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext(),
+  );
+
+  const checkResult = results.find((r) => r.name === "Check: bad-check");
+  assertEquals(checkResult?.passed, false);
+  assertStringIncludes(checkResult?.error ?? "", "invalid result");
+});
+
+Deno.test("validateModel warns when appliesTo references nonexistent method", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  const model: ModelDefinition = {
+    ...testModelWithChecks,
+    checks: {
+      "typo-check": {
+        description: "Has a typo in appliesTo",
+        appliesTo: ["creat"], // typo — "create" is the real method
+        execute: () => Promise.resolve({ pass: true }),
+      },
+    },
+  };
+
+  const results = await service.validateModel(
+    definition,
+    model,
+  );
+
+  const selResult = results.find((r) => r.name === "Check selection");
+  assertEquals(selResult?.passed, false);
+  assertStringIncludes(selResult?.error ?? "", "creat");
+  assertStringIncludes(selResult?.error ?? "", "unknown method");
 });

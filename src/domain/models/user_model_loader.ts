@@ -25,6 +25,8 @@ import { resolveLocalImports } from "./local_import_resolver.ts";
 import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
 import {
+  type CheckDefinition,
+  type CheckResult,
   type DataHandle,
   FileOutputSpecSchema,
   type MethodContext,
@@ -101,6 +103,15 @@ const UserUpgradeSchema = z.object({
 /**
  * Schema for validating user model exports.
  */
+const UserCheckSchema = z.object({
+  description: z.string(),
+  labels: z.array(z.string()).optional(),
+  appliesTo: z.array(z.string()).optional(),
+  execute: z.custom<(context: MethodContext) => Promise<CheckResult>>(
+    (val) => typeof val === "function",
+  ),
+});
+
 const UserModelSchema = z.object({
   type: z.string(),
   version: z.string().refine(CalVer.isValid, {
@@ -111,6 +122,7 @@ const UserModelSchema = z.object({
   resources: z.record(z.string(), ResourceOutputSpecSchema).optional(),
   files: z.record(z.string(), FileOutputSpecSchema).optional(),
   methods: z.record(z.string(), UserMethodSchema),
+  checks: z.record(z.string(), UserCheckSchema).optional(),
   upgrades: z.array(UserUpgradeSchema).optional(),
 });
 
@@ -213,6 +225,7 @@ function formatUserModelError(error: z.ZodError): string {
 const UserExtensionSchema = z.object({
   type: z.string(),
   methods: z.array(z.record(z.string(), UserMethodSchema)),
+  checks: z.array(z.record(z.string(), UserCheckSchema)).optional(),
 });
 
 /**
@@ -519,9 +532,39 @@ export class UserModelLoader {
       };
     }
 
+    // Flatten checks array into a single record (if provided)
+    let checks: Record<string, CheckDefinition> | undefined;
+    if (ext.checks && ext.checks.length > 0) {
+      const flatChecks: Record<string, z.infer<typeof UserCheckSchema>> = {};
+      for (const checkRecord of ext.checks) {
+        for (const [name, check] of Object.entries(checkRecord)) {
+          if (flatChecks[name]) {
+            result.failed.push({
+              file,
+              error:
+                `Duplicate check name '${name}' within extension checks array`,
+            });
+            return;
+          }
+          flatChecks[name] = check;
+        }
+      }
+      checks = Object.fromEntries(
+        Object.entries(flatChecks).map(([name, check]) => [
+          name,
+          {
+            description: check.description,
+            labels: check.labels,
+            appliesTo: check.appliesTo,
+            execute: check.execute,
+          },
+        ]),
+      );
+    }
+
     // Extend the model
     try {
-      modelRegistry.extend(ext.type, methods);
+      modelRegistry.extend(ext.type, methods, checks);
       result.extended.push(file);
     } catch (error) {
       result.failed.push({ file, error: String(error) });
@@ -573,6 +616,21 @@ export class UserModelLoader {
       }),
     );
 
+    // Pass through checks directly (no wrapping needed)
+    const checks: Record<string, CheckDefinition> | undefined = userModel.checks
+      ? Object.fromEntries(
+        Object.entries(userModel.checks).map(([name, check]) => [
+          name,
+          {
+            description: check.description,
+            labels: check.labels,
+            appliesTo: check.appliesTo,
+            execute: check.execute,
+          },
+        ]),
+      )
+      : undefined;
+
     return {
       type: modelType,
       version: userModel.version,
@@ -580,6 +638,7 @@ export class UserModelLoader {
       resources: userModel.resources,
       files: userModel.files,
       methods,
+      ...(checks ? { checks } : {}),
       ...(upgrades && upgrades.length > 0 ? { upgrades } : {}),
     };
   }

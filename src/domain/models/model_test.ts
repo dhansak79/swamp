@@ -24,6 +24,7 @@ import {
   type DataWriter,
   defineModel,
   inferMethodKind,
+  isMutatingKind,
   type MethodContext,
   type ModelDefinition,
   ModelRegistry,
@@ -688,4 +689,115 @@ Deno.test("inferMethodKind - returns undefined for unrecognized names", () => {
 Deno.test("inferMethodKind - explicit kind overrides name inference", () => {
   assertEquals(inferMethodKind("delete", { kind: "action" }), "action");
   assertEquals(inferMethodKind("create", { kind: "read" }), "read");
+});
+
+// --- isMutatingKind tests ---
+
+Deno.test("isMutatingKind - returns true for create/update/delete/action/undefined", () => {
+  assertEquals(isMutatingKind("create"), true);
+  assertEquals(isMutatingKind("update"), true);
+  assertEquals(isMutatingKind("delete"), true);
+  assertEquals(isMutatingKind("action"), true);
+  assertEquals(isMutatingKind(undefined), true);
+});
+
+Deno.test("isMutatingKind - returns false for read/list", () => {
+  assertEquals(isMutatingKind("read"), false);
+  assertEquals(isMutatingKind("list"), false);
+});
+
+// --- ModelRegistry.extend() with checks tests ---
+
+Deno.test("ModelRegistry.extend adds checks to existing model", () => {
+  const registry = new ModelRegistry();
+  const model = createTestModel("swamp/extend-checks-test");
+  registry.register(model);
+
+  registry.extend("swamp/extend-checks-test", {}, {
+    "my-check": {
+      description: "A test check",
+      execute: () => Promise.resolve({ pass: true }),
+    },
+  });
+
+  const extended = registry.get("swamp/extend-checks-test");
+  assertEquals(extended?.checks !== undefined, true);
+  assertEquals("my-check" in extended!.checks!, true);
+});
+
+Deno.test("ModelRegistry.extend throws on check name conflict", () => {
+  const registry = new ModelRegistry();
+  const model: ModelDefinition = {
+    ...createTestModel("swamp/check-conflict"),
+    checks: {
+      "existing-check": {
+        description: "Already exists",
+        execute: () => Promise.resolve({ pass: true }),
+      },
+    },
+  };
+  registry.register(model);
+
+  assertThrows(
+    () =>
+      registry.extend("swamp/check-conflict", {}, {
+        "existing-check": {
+          description: "Duplicate",
+          execute: () => Promise.resolve({ pass: true }),
+        },
+      }),
+    Error,
+    "Check 'existing-check' already exists on model type 'swamp/check-conflict'",
+  );
+});
+
+Deno.test("ModelRegistry.extend preserves existing checks when adding methods only", () => {
+  const registry = new ModelRegistry();
+  const model: ModelDefinition = {
+    ...createTestModel("swamp/preserve-checks"),
+    checks: {
+      "original-check": {
+        description: "Original",
+        execute: () => Promise.resolve({ pass: true }),
+      },
+    },
+  };
+  registry.register(model);
+
+  registry.extend("swamp/preserve-checks", {
+    "new-method": {
+      description: "A new method",
+      arguments: z.object({}),
+      execute: () => Promise.resolve({}),
+    },
+  });
+
+  const extended = registry.get("swamp/preserve-checks");
+  assertEquals("original-check" in extended!.checks!, true);
+  assertEquals("new-method" in extended!.methods, true);
+});
+
+Deno.test("ModelRegistry.extend merges checks from extension with existing checks", () => {
+  const registry = new ModelRegistry();
+  const model: ModelDefinition = {
+    ...createTestModel("swamp/merge-checks"),
+    checks: {
+      "check-a": {
+        description: "Check A",
+        execute: () => Promise.resolve({ pass: true }),
+      },
+    },
+  };
+  registry.register(model);
+
+  registry.extend("swamp/merge-checks", {}, {
+    "check-b": {
+      description: "Check B",
+      execute: () => Promise.resolve({ pass: true }),
+    },
+  });
+
+  const extended = registry.get("swamp/merge-checks");
+  assertEquals("check-a" in extended!.checks!, true);
+  assertEquals("check-b" in extended!.checks!, true);
 });

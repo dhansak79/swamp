@@ -112,6 +112,7 @@ export const model = {
 | `files`           | No       | File output specs (binary/text with content type) |
 | `inputsSchema`    | No       | Zod schema for runtime inputs                     |
 | `methods`         | Yes      | Object of method definitions with `arguments` Zod |
+| `checks`          | No       | Pre-flight checks run before mutating methods     |
 
 ## Resources & Files
 
@@ -333,6 +334,14 @@ model.
   (droplets, EC2 instances). Not needed when the API is naturally idempotent
   (tags, S3 buckets) or you intentionally want multiple instances.
 
+## Pre-flight Checks
+
+Checks run automatically before mutating methods (`create`, `update`, `delete`,
+`action`). Define them on `checks` in the model export — see the Quick Start
+example above. For the full `CheckDefinition` interface, labels conventions,
+`appliesTo` scoping, and extension checks, see
+[references/checks.md](references/checks.md).
+
 ## Extending Existing Model Types
 
 Add new methods to existing model types without changing their schema. Use
@@ -359,11 +368,16 @@ export const extension = {
 };
 ```
 
+Extensions can also add pre-flight checks — see
+[references/checks.md](references/checks.md#extension-checks) for the format.
+
 **Extension rules:**
 
 - Extensions **cannot** change the target model's Zod schema
 - Extensions **only** add new methods — no overriding existing methods
 - `methods` is always an array of `Record<string, MethodDef>` objects
+- `checks` is always an array of `Record<string, CheckDefinition>` objects
+- Check and method names must not conflict with existing ones on the target type
 
 ## Model Discovery
 
@@ -471,6 +485,9 @@ swamp model type describe @myorg/my-model --json  # Check schema
 
 - **API Reference**: See [references/api.md](references/api.md) for detailed
   `writeResource`, `createFileWriter`, `DataWriter`, and logging API docs
+- **Pre-flight Checks**: See [references/checks.md](references/checks.md) for
+  `CheckDefinition` interface, `CheckResult`, labels, scoping, and extension
+  checks
 - **Examples**: See [references/examples.md](references/examples.md) for
   complete model examples (CRUD lifecycle, data chaining, extensions, etc.)
 - **Scenarios**: See [references/scenarios.md](references/scenarios.md) for

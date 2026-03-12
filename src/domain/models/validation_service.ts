@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { z } from "zod";
-import type { ModelDefinition } from "./model.ts";
+import type { MethodContext, ModelDefinition } from "./model.ts";
 import { modelRegistry } from "./model.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { DefinitionSchema } from "../definitions/definition.ts";
@@ -173,6 +173,17 @@ function formatZodError(error: z.ZodError): string {
 }
 
 /**
+ * Context for running check validations during `model validate`.
+ */
+export interface CheckValidationContext {
+  repoDir: string;
+  dataRepository: MethodContext["dataRepository"];
+  definitionRepository: DefinitionRepository;
+  labels?: string[];
+  method?: string;
+}
+
+/**
  * Domain service interface for model validation.
  */
 export interface ModelValidationService {
@@ -184,12 +195,14 @@ export interface ModelValidationService {
    * @param definition - The definition to validate
    * @param modelDef - The model definition containing schemas
    * @param definitionRepo - Optional definition repository for resolving model references in expressions
+   * @param checkContext - Optional context for running pre-flight checks
    * @returns Array of validation results
    */
   validateModel(
     definition: Definition,
     modelDef: ModelDefinition,
     definitionRepo?: DefinitionRepository,
+    checkContext?: CheckValidationContext,
   ): Promise<ValidationResult[]>;
 }
 
@@ -211,10 +224,11 @@ export interface ExpressionPathError {
  * Default implementation of the model validation service.
  */
 export class DefaultModelValidationService implements ModelValidationService {
-  validateModel(
+  async validateModel(
     definition: Definition,
     modelDef: ModelDefinition,
     definitionRepo?: DefinitionRepository,
+    checkContext?: CheckValidationContext,
   ): Promise<ValidationResult[]> {
     const validations: Promise<ValidationResult>[] = [
       this.validateDefinitionSchema(definition),
@@ -229,7 +243,113 @@ export class DefaultModelValidationService implements ModelValidationService {
       );
     }
 
-    return Promise.all(validations);
+    // Validate definition-level check selection (require/skip)
+    validations.push(
+      this.validateCheckSelection(definition, modelDef),
+    );
+
+    const results = await Promise.all(validations);
+
+    // Run pre-flight checks if context provided and model has checks
+    if (modelDef.checks && checkContext) {
+      const checkResults = await this.runCheckValidations(
+        definition,
+        modelDef,
+        checkContext,
+      );
+      results.push(...checkResults);
+    }
+
+    return results;
+  }
+
+  private async runCheckValidations(
+    definition: Definition,
+    modelDef: ModelDefinition,
+    checkContext: CheckValidationContext,
+  ): Promise<ValidationResult[]> {
+    const checks = modelDef.checks!;
+    const results: ValidationResult[] = [];
+    const defChecks = definition.checkSelection;
+    const skippedCheckNames = new Set(defChecks?.skip ?? []);
+
+    for (const [name, check] of Object.entries(checks)) {
+      // Definition-level skip always wins
+      if (skippedCheckNames.has(name)) {
+        continue;
+      }
+
+      // Filter by labels if provided
+      if (
+        checkContext.labels && checkContext.labels.length > 0 &&
+        (!check.labels ||
+          !check.labels.some((l) => checkContext.labels!.includes(l)))
+      ) {
+        continue;
+      }
+
+      // Filter by method: if --method given, only run matching checks.
+      // If no --method given, skip checks that have an explicit appliesTo
+      // (they only make sense in the context of a specific method).
+      if (check.appliesTo) {
+        if (!checkContext.method) {
+          continue;
+        }
+        if (!check.appliesTo.includes(checkContext.method)) {
+          continue;
+        }
+      }
+
+      try {
+        const context: MethodContext = {
+          repoDir: checkContext.repoDir,
+          modelType: modelDef.type,
+          modelId: definition.id,
+          globalArgs: definition.globalArguments,
+          definition: {
+            id: definition.id,
+            name: definition.name,
+            version: definition.version,
+            tags: definition.tags,
+          },
+          methodName: checkContext.method ?? "",
+          logger: {
+            debug() {},
+            info() {},
+            warn() {},
+            error() {},
+            fatal() {},
+            with() {
+              return this;
+            },
+          } as unknown as MethodContext["logger"],
+          dataRepository: checkContext.dataRepository,
+          definitionRepository: checkContext.definitionRepository,
+        };
+
+        const checkResult = await check.execute(context);
+        if (!checkResult || typeof checkResult.pass !== "boolean") {
+          results.push(
+            ValidationResult.fail(
+              `Check: ${name}`,
+              "Check returned invalid result (expected { pass: boolean })",
+            ),
+          );
+        } else if (checkResult.pass) {
+          results.push(ValidationResult.pass(`Check: ${name}`));
+        } else {
+          const errors = checkResult.errors ?? ["Check failed"];
+          results.push(
+            ValidationResult.fail(`Check: ${name}`, errors.join("; ")),
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        results.push(ValidationResult.fail(`Check: ${name}`, message));
+      }
+    }
+
+    return results;
   }
 
   private validateWithSchema(
@@ -725,6 +845,84 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
 
     return null;
+  }
+
+  /**
+   * Validates that definition-level check selection (require/skip) references
+   * checks that exist on the model definition.
+   */
+  private validateCheckSelection(
+    definition: Definition,
+    modelDef: ModelDefinition,
+  ): Promise<ValidationResult> {
+    const errors: string[] = [];
+
+    // Validate appliesTo references existing methods
+    if (modelDef.checks) {
+      const availableMethods = new Set(Object.keys(modelDef.methods));
+      for (const [checkName, check] of Object.entries(modelDef.checks)) {
+        if (check.appliesTo) {
+          for (const methodName of check.appliesTo) {
+            if (!availableMethods.has(methodName)) {
+              errors.push(
+                `Check "${checkName}" references unknown method "${methodName}" in appliesTo`,
+              );
+            }
+          }
+        }
+      }
+    }
+
+    const selection = definition.checkSelection;
+    if (!selection && errors.length === 0) {
+      return Promise.resolve(ValidationResult.pass("Check selection"));
+    }
+
+    const availableChecks = modelDef.checks
+      ? new Set(Object.keys(modelDef.checks))
+      : new Set<string>();
+
+    // Validate required check names exist
+    if (selection?.require) {
+      for (const name of selection.require) {
+        if (!availableChecks.has(name)) {
+          errors.push(
+            `Required check "${name}" not found on model type "${modelDef.type.normalized}"`,
+          );
+        }
+      }
+    }
+
+    // Validate skipped check names exist
+    if (selection?.skip) {
+      for (const name of selection.skip) {
+        if (!availableChecks.has(name)) {
+          errors.push(
+            `Skipped check "${name}" not found on model type "${modelDef.type.normalized}"`,
+          );
+        }
+      }
+    }
+
+    // Warn about overlap between require and skip (skip wins)
+    if (selection?.require && selection.skip) {
+      const overlap = selection.require.filter((n) =>
+        selection.skip!.includes(n)
+      );
+      for (const name of overlap) {
+        errors.push(
+          `Check "${name}" is in both require and skip lists — skip takes precedence`,
+        );
+      }
+    }
+
+    if (errors.length === 0) {
+      return Promise.resolve(ValidationResult.pass("Check selection"));
+    }
+
+    return Promise.resolve(
+      ValidationResult.fail("Check selection", errors.join("; ")),
+    );
   }
 
   /**

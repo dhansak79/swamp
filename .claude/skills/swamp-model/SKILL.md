@@ -24,23 +24,28 @@ validate → run.
 
 ## Quick Reference
 
-| Task               | Command                                                  |
-| ------------------ | -------------------------------------------------------- |
-| Search model types | `swamp model type search [query] --json`                 |
-| Describe a type    | `swamp model type describe <type> --json`                |
-| Create model input | `swamp model create <type> <name> --json`                |
-| Search models      | `swamp model search [query] --json`                      |
-| Get model details  | `swamp model get <id_or_name> --json`                    |
-| Edit model input   | `swamp model edit [id_or_name]`                          |
-| Delete a model     | `swamp model delete <id_or_name> --json`                 |
-| Validate model     | `swamp model validate [id_or_name] --json`               |
-| Evaluate input(s)  | `swamp model evaluate [id_or_name] --json`               |
-| Run a method       | `swamp model method run <id_or_name> <method> --json`    |
-| Run with inputs    | `swamp model method run <name> <method> --input '{}' -j` |
-| Search outputs     | `swamp model output search [query] --json`               |
-| Get output details | `swamp model output get <output_or_model> --json`        |
-| View output logs   | `swamp model output logs <output_id> --json`             |
-| View output data   | `swamp model output data <output_id> --json`             |
+| Task                | Command                                                            |
+| ------------------- | ------------------------------------------------------------------ |
+| Search model types  | `swamp model type search [query] --json`                           |
+| Describe a type     | `swamp model type describe <type> --json`                          |
+| Create model input  | `swamp model create <type> <name> --json`                          |
+| Search models       | `swamp model search [query] --json`                                |
+| Get model details   | `swamp model get <id_or_name> --json`                              |
+| Edit model input    | `swamp model edit [id_or_name]`                                    |
+| Delete a model      | `swamp model delete <id_or_name> --json`                           |
+| Validate model      | `swamp model validate [id_or_name] --json`                         |
+| Validate by label   | `swamp model validate [id_or_name] --label policy --json`          |
+| Validate by method  | `swamp model validate [id_or_name] --method create --json`         |
+| Evaluate input(s)   | `swamp model evaluate [id_or_name] --json`                         |
+| Run a method        | `swamp model method run <id_or_name> <method> --json`              |
+| Run with inputs     | `swamp model method run <name> <method> --input '{}' -j`           |
+| Skip all checks     | `swamp model method run <name> <method> --skip-checks -j`          |
+| Skip check by name  | `swamp model method run <name> <method> --skip-check <n> -j`       |
+| Skip check by label | `swamp model method run <name> <method> --skip-check-label <l> -j` |
+| Search outputs      | `swamp model output search [query] --json`                         |
+| Get output details  | `swamp model output get <output_or_model> --json`                  |
+| View output logs    | `swamp model output logs <output_id> --json`                       |
+| View output data    | `swamp model output data <output_id> --json`                       |
 
 ## Repository Structure
 
@@ -142,6 +147,37 @@ methods:
       run: "echo 'Hello, world!'"
 ```
 
+### Definition-Level Check Selection
+
+Definitions can control which pre-flight checks run via the `checks` field:
+
+```yaml
+id: 550e8400-e29b-41d4-a716-446655440000
+name: my-vpc
+version: 1
+tags: {}
+checks:
+  require:
+    - no-cidr-overlap # Must run, immune to --skip-checks CLI flags
+  skip:
+    - slow-api-check # Always skipped
+globalArguments:
+  cidrBlock: "10.0.0.0/16"
+methods:
+  create:
+    arguments: {}
+```
+
+**Precedence rules:**
+
+- `skip` always wins — even over `require` for the same check name
+- `require` makes checks immune to `--skip-checks`, `--skip-check <name>`, and
+  `--skip-check-label <label>` CLI flags (e.g., `--skip-checks` skips
+  non-required checks but required checks still run)
+- `require` checks still respect `appliesTo` method scoping
+- `model validate` honors `skip` lists and warns on require/skip overlap;
+  validation errors if a check name doesn't exist on the model type
+
 ### Model Inputs Schema
 
 Models can define an `inputs` schema for runtime parameterization:
@@ -213,11 +249,15 @@ swamp model delete my-shell --json
 
 ## Validate Model Inputs
 
-Validate a model definition against its type schema.
+Validate a model definition against its type schema. Use `--label` to run only
+checks with a specific label, and `--method` to simulate validation for a
+specific method context.
 
 ```bash
 swamp model validate my-shell --json
-swamp model validate --json  # Validate all models
+swamp model validate --json                          # Validate all models
+swamp model validate my-shell --label policy --json  # Only checks with label "policy"
+swamp model validate my-shell --method create --json # Validate for a specific method
 ```
 
 **Output shape (single):**
@@ -287,15 +327,25 @@ swamp model method run my-shell execute --json
 swamp model method run my-deploy create --input '{"environment": "prod"}' --json
 swamp model method run my-deploy create --input-file inputs.yaml --json
 swamp model method run my-deploy create --last-evaluated --json
+swamp model method run my-deploy create --skip-checks --json
+swamp model method run my-deploy create --skip-check valid-region --json
+swamp model method run my-deploy create --skip-check-label live --json
 ```
+
+Pre-flight checks run automatically before mutating methods (`create`, `update`,
+`delete`, `action`). Read-only methods (`sync`, `get`, etc.) do not trigger
+checks.
 
 **Options:**
 
-| Flag               | Description                                |
-| ------------------ | ------------------------------------------ |
-| `--input <json>`   | Input values as JSON string                |
-| `--input-file <f>` | Input values from YAML file                |
-| `--last-evaluated` | Use previously evaluated model (skip eval) |
+| Flag                         | Description                                     |
+| ---------------------------- | ----------------------------------------------- |
+| `--input <json>`             | Input values as JSON string                     |
+| `--input-file <f>`           | Input values from YAML file                     |
+| `--last-evaluated`           | Use previously evaluated model (skip eval)      |
+| `--skip-checks`              | Skip all pre-flight checks                      |
+| `--skip-check <name>`        | Skip a specific check by name (repeatable)      |
+| `--skip-check-label <label>` | Skip all checks with a given label (repeatable) |
 
 **Output shape:**
 

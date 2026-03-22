@@ -18,14 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import {
-  type IssueCreateData,
-  renderIssueCancelled,
-  renderIssueCreate,
-} from "../../presentation/output/issue_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  consumeStream,
+  createIssueCreateDeps,
+  createLibSwampContext,
+  issueCreate,
+} from "../../libswamp/mod.ts";
+import {
+  createIssueCreateRenderer,
+  renderIssueCancelled,
+} from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
-import { GitHubIssueService } from "../../infrastructure/github/github_issue_service.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -116,7 +120,6 @@ export const issueFeatureCommand = new Command()
     ctx.logger.debug`Submitting feature request`;
 
     const editorService = new EditorService();
-    const githubService = new GitHubIssueService();
 
     let title: string;
     let body: string;
@@ -176,30 +179,18 @@ export const issueFeatureCommand = new Command()
 
     ctx.logger.debug`Creating GitHub issue with title: ${title}`;
 
-    // Create the GitHub issue
-    const result = await githubService.createIssue({
-      title,
-      body,
-      labels: ["enhancement", "external"],
-    });
-
-    const data: IssueCreateData = result.method === "created"
-      ? {
-        method: "created",
-        url: result.url,
-        number: result.number,
-        type: "feature",
+    const libCtx = createLibSwampContext({ logger: ctx.logger });
+    const deps = createIssueCreateDeps();
+    const renderer = createIssueCreateRenderer(ctx.outputMode);
+    await consumeStream(
+      issueCreate(libCtx, deps, {
         title,
-      }
-      : {
-        method: "url",
-        url: result.url,
+        body,
+        labels: ["enhancement", "external"],
         type: "feature",
-        title,
-        body: result.body,
-        labels: result.labels,
-      };
+      }),
+      renderer.handlers(),
+    );
 
-    renderIssueCreate(data, ctx.outputMode);
     ctx.logger.debug("Feature request submitted successfully");
   });

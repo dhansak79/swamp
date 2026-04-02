@@ -64,6 +64,44 @@ jobs:
 See [./expressions.md] for CEL expression syntax and [./models.md] for detailed
 input specification patterns.
 
+### Workflow Triggers
+
+Workflows can declare a `trigger` section to enable automatic execution via
+`swamp serve`. The `trigger` section is an optional object that contains trigger
+configuration.
+
+#### Schedule Trigger
+
+A `schedule` trigger runs the workflow on a cron schedule:
+
+```yaml
+id: abc123
+name: anime-downloader
+trigger:
+  schedule: "0 3,12 * * *"
+jobs:
+  # ... jobs run automatically at 3am and noon
+```
+
+**Schedule behavior:**
+
+- Uses standard 5-field cron syntax (minute, hour, day-of-month, month,
+  day-of-week), plus optional seconds field
+- Validated at parse time using [croner](https://github.com/Hexagon/croner)
+- On `swamp serve` startup, all workflows with schedules are registered
+- A filesystem watcher monitors the `workflows/` directory for live reload —
+  adding, changing, or removing a schedule takes effect without restart
+- Each scheduled trigger calls `workflowRun` via libswamp (same code path as
+  CLI and WebSocket)
+- **Overlap prevention:** If a workflow is still running from a previous
+  scheduled trigger, the next trigger is skipped with a warning
+- **No catch-up:** If serve was down during a scheduled time, it does not fire
+  missed schedules on startup — it waits for the next natural cron tick
+- Use `--no-schedule` on `swamp serve` to disable scheduled execution
+
+The `ScheduledExecutionService` lives in libswamp, so any consumer (serve, a
+future daemon, or programmatic use) can use the same scheduling infrastructure.
+
 ## Jobs
 
 Each job has a name, a description, a series of steps, and an array of objects

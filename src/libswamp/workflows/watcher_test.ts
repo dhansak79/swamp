@@ -17,27 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export type {
-  ModelMethodRunPayload,
-  SerializedError,
-  SerializedEvent,
-  ServerMessage,
-  ServerRequest,
-  WorkflowRunPayload,
-} from "./protocol.ts";
-export { serializeEvent, serializeSwampError } from "./serializer.ts";
-export { type ConnectionContext, handleConnection } from "./connection.ts";
-export {
-  createModelMethodRunDeps,
-  createWorkflowRunDeps,
-  executeWorkflowWithLocks,
-} from "./deps.ts";
-export {
-  parseWebhookFlag,
-  verifySignature,
-  type WebhookEndpoint,
-  type WebhookEndpointInfo,
-  type WebhookEvent,
-  type WebhookEventHandler,
-  WebhookService,
-} from "./webhook.ts";
+import { assertEquals } from "@std/assert";
+import { workflowsDir } from "./watcher.ts";
+
+Deno.test("workflowsDir: returns correct path", () => {
+  assertEquals(workflowsDir("/repo"), "/repo/workflows");
+});

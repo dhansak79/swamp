@@ -40,6 +40,11 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
+import {
+  type ExtensionCatalogStore,
+  type ExtensionTypeRow,
+  sourceDirsFingerprint,
+} from "../../infrastructure/persistence/extension_catalog_store.ts";
 
 const logger = getLogger(["swamp", "vaults", "loader"]);
 
@@ -183,7 +188,7 @@ export class UserVaultLoader {
           denoPath,
           baseDir,
         );
-        const module = await this.importBundle(js, file);
+        const module = await this.importBundle(js, file, baseDir);
 
         if (!module.vault) {
           // Files without a vault export are silently skipped (utility files)
@@ -341,13 +346,16 @@ export class UserVaultLoader {
   private async importBundle(
     js: string,
     relativePath: string,
+    baseDir?: string,
   ): Promise<Record<string, unknown>> {
     const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
 
     if (this.repoDir) {
-      const bundlePath = this.resolveBundlePath(
-        relativePath.replace(/\.ts$/, ".js"),
-      );
+      const ns = baseDir ? bundleNamespace(baseDir, this.repoDir) : "";
+      const segments = ns
+        ? [ns, relativePath.replace(/\.ts$/, ".js")]
+        : [relativePath.replace(/\.ts$/, ".js")];
+      const bundlePath = this.resolveBundlePath(...segments);
 
       try {
         await Deno.stat(bundlePath);
@@ -388,6 +396,426 @@ export class UserVaultLoader {
         return `${path}: ${i.message}`;
       })
       .join("; ");
+  }
+
+  /**
+   * Builds the catalog index for vault types without importing bundles.
+   * On first run, does a full import to bootstrap the catalog.
+   * On subsequent runs, checks mtimes and only rebundles stale files.
+   * Registers lazy entries for all vault types in the catalog.
+   */
+  async buildIndex(
+    vaultsDir: string,
+    catalog: ExtensionCatalogStore,
+    options?: { additionalDirs?: string[] },
+  ): Promise<VaultLoadResult> {
+    const result: VaultLoadResult = { loaded: [], failed: [] };
+
+    installZodGlobal();
+    const denoPath = await this.denoRuntime.ensureDeno();
+
+    // Force a full rescan if the set of extension source directories has
+    // changed (e.g. user ran `swamp extension source add`). Without this,
+    // the catalog's "populated" flag causes buildIndex to skip the full
+    // import path, so vaults from newly added sources are never discovered
+    // (#1107).
+    const currentSourceFingerprint = sourceDirsFingerprint(
+      vaultsDir,
+      options?.additionalDirs,
+    );
+    if (
+      catalog.isPopulated("vault") &&
+      catalog.getSourceDirsFingerprint("vault") !== currentSourceFingerprint
+    ) {
+      logger
+        .warn`Extension source dirs changed — invalidating vault catalog for full rescan`;
+      catalog.invalidate("vault");
+    }
+
+    if (catalog.isPopulated("vault")) {
+      const staleFiles = await this.findStaleFiles(
+        vaultsDir,
+        catalog,
+        options?.additionalDirs,
+      );
+
+      if (staleFiles.length === 0) {
+        this.registerLazyFromCatalog(catalog);
+        return result;
+      }
+
+      for (const { absolutePath, relativePath, baseDir } of staleFiles) {
+        try {
+          await this.rebundleAndUpdateCatalog(
+            absolutePath,
+            relativePath,
+            denoPath,
+            baseDir,
+            catalog,
+          );
+          result.loaded.push(relativePath);
+        } catch (error) {
+          result.failed.push({ file: relativePath, error: String(error) });
+        }
+      }
+
+      this.registerLazyFromCatalog(catalog);
+      return result;
+    }
+
+    // Catalog not populated — full import to bootstrap.
+    const fullResult = await this.loadVaults(vaultsDir, {
+      additionalDirs: options?.additionalDirs,
+      skipAlreadyRegistered: true,
+    });
+
+    this.populateCatalogFromRegistry(
+      catalog,
+      vaultsDir,
+      options?.additionalDirs,
+    );
+    catalog.markPopulated("vault");
+    catalog.setSourceDirsFingerprint(currentSourceFingerprint, "vault");
+
+    return fullResult;
+  }
+
+  /**
+   * Loads a single vault type by its normalized type name.
+   * Looks up the bundle path from the catalog, imports the bundle,
+   * and registers the type.
+   */
+  async loadSingleType(
+    typeNormalized: string,
+    catalog: ExtensionCatalogStore,
+  ): Promise<void> {
+    installZodGlobal();
+
+    const entry = catalog.findByType(typeNormalized, "vault");
+    if (!entry) {
+      throw new Error(`No catalog entry for vault type: ${typeNormalized}`);
+    }
+
+    await this.importAndRegisterBundle(entry);
+  }
+
+  /**
+   * Imports a single vault bundle and registers it.
+   */
+  private async importAndRegisterBundle(
+    entry: ExtensionTypeRow,
+  ): Promise<void> {
+    if (vaultTypeRegistry.get(entry.type_normalized)) return;
+
+    let js = await Deno.readTextFile(entry.bundle_path);
+    const fixed = fixCjsEsmInterop(rewriteZodImports(js));
+    if (fixed !== js) {
+      js = fixed;
+      await Deno.writeTextFile(entry.bundle_path, js);
+    }
+    const module = await import(toFileUrl(entry.bundle_path).href);
+
+    if (!module.vault) {
+      throw new Error(`Bundle has no vault export: ${entry.bundle_path}`);
+    }
+
+    const parsed = UserVaultSchema.safeParse(module.vault);
+    if (!parsed.success) {
+      throw new Error(this.formatValidationError(parsed.error));
+    }
+
+    vaultTypeRegistry.promoteFromLazy({
+      type: parsed.data.type,
+      name: parsed.data.name,
+      description: parsed.data.description,
+      configSchema: parsed.data.configSchema,
+      createProvider: parsed.data.createProvider,
+      isBuiltIn: false,
+    });
+  }
+
+  /**
+   * Registers lazy entries for all vault types in the catalog.
+   */
+  private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
+    const entries = catalog.findByKind("vault");
+    for (const entry of entries) {
+      vaultTypeRegistry.registerLazy({
+        type: entry.type_normalized,
+        bundlePath: entry.bundle_path,
+        sourcePath: entry.source_path,
+        version: entry.version,
+        description: entry.description,
+      });
+    }
+  }
+
+  /**
+   * Populates the catalog from the currently loaded registry.
+   */
+  private populateCatalogFromRegistry(
+    catalog: ExtensionCatalogStore,
+    vaultsDir: string,
+    additionalDirs?: string[],
+  ): void {
+    if (!this.repoDir) return;
+
+    const bundleBaseDir = this.resolveBundlePath();
+
+    const dirs = [vaultsDir, ...(additionalDirs ?? [])];
+    for (const dir of dirs) {
+      try {
+        this.populateCatalogFromDir(dir, bundleBaseDir, catalog);
+      } catch {
+        // Directory doesn't exist — skip
+      }
+    }
+  }
+
+  /**
+   * Synchronously populates catalog entries from a single directory.
+   */
+  private populateCatalogFromDir(
+    dir: string,
+    bundleBaseDir: string,
+    catalog: ExtensionCatalogStore,
+  ): void {
+    const files = this.discoverFilesSync(dir);
+    const ns = this.repoDir ? bundleNamespace(dir, this.repoDir) : "";
+    for (const relativePath of files) {
+      const absolutePath = resolve(dir, relativePath);
+      const bundlePath = join(
+        bundleBaseDir,
+        ns,
+        relativePath.replace(/\.ts$/, ".js"),
+      );
+
+      try {
+        const sourceStat = Deno.statSync(absolutePath);
+        Deno.statSync(bundlePath);
+
+        const source = Deno.readTextFileSync(absolutePath);
+        if (!/export\s+const\s+vault\s*[=:]/.test(source)) continue;
+
+        const typeMatch = source.match(/type\s*:\s*["']([^"']+)["']/);
+        if (!typeMatch) continue;
+
+        const typeNormalized = typeMatch[1].toLowerCase();
+
+        // Try to get description from the already-loaded registry
+        const registryInfo = vaultTypeRegistry.get(typeNormalized);
+
+        catalog.upsert({
+          type_normalized: typeNormalized,
+          kind: "vault",
+          bundle_path: bundlePath,
+          source_path: absolutePath,
+          version: "",
+          description: registryInfo?.description ?? "",
+          extends_type: "",
+          source_mtime: sourceStat.mtime?.toISOString() ?? "",
+        });
+      } catch {
+        // Skip files that can't be read or don't have bundles
+      }
+    }
+  }
+
+  /**
+   * Synchronous version of discoverFiles for catalog population.
+   */
+  private discoverFilesSync(dir: string, prefix = ""): string[] {
+    const files: string[] = [];
+    for (const entry of Deno.readDirSync(dir)) {
+      const relativePath = prefix ? join(prefix, entry.name) : entry.name;
+      if (entry.isDirectory) {
+        if (entry.name.startsWith("_")) continue;
+        files.push(
+          ...this.discoverFilesSync(join(dir, entry.name), relativePath),
+        );
+      } else if (
+        entry.isFile && entry.name.endsWith(".ts") &&
+        !entry.name.endsWith("_test.ts")
+      ) {
+        files.push(relativePath);
+      }
+    }
+    return files.sort();
+  }
+
+  /**
+   * Finds files that have changed since the catalog was last populated.
+   */
+  private async findStaleFiles(
+    vaultsDir: string,
+    catalog: ExtensionCatalogStore,
+    additionalDirs?: string[],
+  ): Promise<
+    Array<{ absolutePath: string; relativePath: string; baseDir: string }>
+  > {
+    const stale: Array<{
+      absolutePath: string;
+      relativePath: string;
+      baseDir: string;
+    }> = [];
+
+    const allDirs = [vaultsDir, ...(additionalDirs ?? [])];
+
+    const catalogEntries = catalog.findByKind("vault");
+    const catalogBySource = new Map<string, ExtensionTypeRow>();
+    for (const entry of catalogEntries) {
+      catalogBySource.set(entry.source_path, entry);
+    }
+
+    const seenSources = new Set<string>();
+
+    for (const dir of allDirs) {
+      try {
+        await Deno.stat(dir);
+      } catch {
+        continue;
+      }
+
+      const files = await this.discoverFiles(dir);
+      for (const relativePath of files) {
+        const absolutePath = resolve(dir, relativePath);
+        seenSources.add(absolutePath);
+
+        const catalogEntry = catalogBySource.get(absolutePath);
+        if (!catalogEntry) {
+          stale.push({ absolutePath, relativePath, baseDir: dir });
+          continue;
+        }
+
+        try {
+          const stat = await Deno.stat(absolutePath);
+          const sourceMtime = stat.mtime?.toISOString() ?? "";
+          if (sourceMtime !== catalogEntry.source_mtime) {
+            stale.push({ absolutePath, relativePath, baseDir: dir });
+            continue;
+          }
+
+          // Entry point is fresh — check transitive dependencies against
+          // the cached bundle file's mtime. This catches edits to imported
+          // .ts files that don't touch the entry point (#1094).
+          const bundlePath = this.getVaultBundlePath(relativePath, dir);
+          if (bundlePath) {
+            try {
+              const bundleStat = await Deno.stat(bundlePath);
+              if (bundleStat.mtime) {
+                const { resolvedFiles } = await resolveLocalImports(
+                  [absolutePath],
+                  dir,
+                );
+                const depStats = await Promise.all(
+                  resolvedFiles.map((f) => Deno.stat(f)),
+                );
+                const newestDepMtime = depStats.reduce<Date | null>(
+                  (max, s) => {
+                    if (!s.mtime) return max;
+                    if (!max) return s.mtime;
+                    return s.mtime > max ? s.mtime : max;
+                  },
+                  null,
+                );
+                if (
+                  newestDepMtime && newestDepMtime >= bundleStat.mtime
+                ) {
+                  stale.push({ absolutePath, relativePath, baseDir: dir });
+                }
+              }
+            } catch {
+              // Bundle file missing or dep stat failed — mark as stale
+              // to trigger a rebundle.
+              stale.push({ absolutePath, relativePath, baseDir: dir });
+            }
+          }
+        } catch {
+          stale.push({ absolutePath, relativePath, baseDir: dir });
+        }
+      }
+    }
+
+    for (const [sourcePath] of catalogBySource) {
+      if (!seenSources.has(sourcePath)) {
+        catalog.removeBySourcePath(sourcePath);
+      }
+    }
+
+    return stale;
+  }
+
+  /**
+   * Rebundles a single file and updates the catalog entry.
+   */
+  private async rebundleAndUpdateCatalog(
+    absolutePath: string,
+    relativePath: string,
+    denoPath: string,
+    baseDir: string,
+    catalog: ExtensionCatalogStore,
+  ): Promise<void> {
+    const source = await Deno.readTextFile(absolutePath);
+    if (!/export\s+const\s+vault\s*[=:]/.test(source)) {
+      return;
+    }
+
+    const js = await this.bundleWithCache(
+      absolutePath,
+      relativePath,
+      denoPath,
+      baseDir,
+    );
+    const module = await this.importBundle(js, relativePath, baseDir);
+
+    if (!module.vault) return;
+
+    const parsed = UserVaultSchema.safeParse(module.vault);
+    if (!parsed.success) {
+      throw new Error(this.formatValidationError(parsed.error));
+    }
+
+    const stat = await Deno.stat(absolutePath);
+    const sourceMtime = stat.mtime?.toISOString() ?? "";
+    const typeNormalized = parsed.data.type.toLowerCase();
+    const bundlePath = this.getVaultBundlePath(relativePath, baseDir);
+
+    catalog.upsert({
+      type_normalized: typeNormalized,
+      kind: "vault",
+      bundle_path: bundlePath,
+      source_path: absolutePath,
+      version: "",
+      description: parsed.data.description,
+      extends_type: "",
+      source_mtime: sourceMtime,
+    });
+
+    // Also register since we already imported
+    if (!vaultTypeRegistry.has(parsed.data.type)) {
+      vaultTypeRegistry.register({
+        type: parsed.data.type,
+        name: parsed.data.name,
+        description: parsed.data.description,
+        configSchema: parsed.data.configSchema,
+        createProvider: parsed.data.createProvider,
+        isBuiltIn: false,
+      });
+    }
+  }
+
+  /**
+   * Returns the bundle cache path for a relative source path.
+   */
+  private getVaultBundlePath(
+    relativePath: string,
+    baseDir: string,
+  ): string {
+    if (!this.repoDir) return "";
+    return this.resolveBundlePath(
+      bundleNamespace(baseDir, this.repoDir),
+      relativePath.replace(/\.ts$/, ".js"),
+    );
   }
 
   /**

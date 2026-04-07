@@ -29,22 +29,28 @@ class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
     return {
       completed: (e) => {
         const data = e.data;
-        if (data.method === "created") {
+        if (data.method === "lab") {
           logger.info(
-            "Created {type} report #{number}: {title}",
+            "Submitted {type} report #{number}: {title}",
             { type: data.type, number: data.number, title: data.title },
           );
-          logger.info("View at: {url}", { url: data.url });
+          logger.info("View at: {url}", {
+            url: `${data.serverUrl}/lab/${data.number}`,
+          });
+          if (data.type === "security") {
+            logger.info(
+              "This security report is visible only to you and the admin team at swamp.club.",
+            );
+          }
         } else {
           logger.info(
-            "GitHub CLI is not available. Open this URL to submit your {type} report:",
+            "Opening email client to submit {type} report...",
             { type: data.type },
           );
-          logger.info("{url}", { url: data.url });
-          logger.info("");
-          logger.info("Title: {title}", { title: data.title });
-          logger.info("");
-          logger.info("{body}", { body: data.body });
+          logger.info(
+            "If your email client did not open, send manually to {email}",
+            { email: "support@systeminit.com" },
+          );
         }
       },
       error: (e) => {
@@ -80,7 +86,7 @@ export function createIssueCreateRenderer(
 
 /** Data structure for issue editor cancelled output. */
 export interface IssueCancelledData {
-  type: "bug" | "feature";
+  type: "bug" | "feature" | "security";
   reason: "empty" | "cancelled";
 }
 

@@ -30,51 +30,50 @@ import { resolveDestination, submitIssue } from "./issue_submit.ts";
 type AnyOptions = any;
 
 /**
- * Template for bug reports.
+ * Template for security reports.
  */
-const BUG_TEMPLATE = `
-# Bug Report
+const SECURITY_TEMPLATE = `
+# Security Report
 
 ## Title
-<!-- Enter a brief, descriptive title for the bug on the line below -->
+<!-- Enter a brief, descriptive title for the vulnerability on the line below -->
 
 
 ## Description
-<!-- Describe the bug in detail. What did you expect to happen? What actually happened? -->
+<!-- Describe the security issue. What is the vulnerability? What is the potential impact? -->
 
 
 ## Steps to Reproduce
-<!-- List the steps to reproduce the bug -->
+<!-- List the steps to reproduce the vulnerability -->
 1.
 2.
 3.
 
-## Environment
-<!-- Include relevant environment information -->
-- swamp version:
-- OS:
-- Shell:
+## Affected Components
+<!-- Which parts of swamp are affected? (CLI, runtime, API, extensions, etc.) -->
+
+
+## Severity Assessment
+<!-- Your assessment: low, medium, high, or critical -->
+
 
 ## Additional Context
-<!-- Add any other context about the problem here -->
+<!-- Add any other context about the security issue here -->
 
 `.trimStart();
 
 /**
- * Parses the bug report content from the editor.
+ * Parses the security report content from the editor.
  * Returns null if the content is empty or unchanged from the template.
  */
-function parseBugContent(
+export function parseSecurityContent(
   content: string,
 ): { title: string; body: string } | null {
-  // Check if content is essentially empty or unchanged
   const trimmedContent = content.trim();
-  if (!trimmedContent || trimmedContent === BUG_TEMPLATE.trim()) {
+  if (!trimmedContent || trimmedContent === SECURITY_TEMPLATE.trim()) {
     return null;
   }
 
-  // Extract title from the "## Title" section
-  // Title must be a single line that doesn't start with # or <!--
   const titleMatch = content.match(
     /## Title\s*\n(?:<!--[^>]*-->\s*\n)?([^\n#<][^\n]*)/,
   );
@@ -84,7 +83,6 @@ function parseBugContent(
     return null;
   }
 
-  // Build body from remaining sections (everything after ## Description)
   const descriptionIndex = content.indexOf("## Description");
   if (descriptionIndex === -1) {
     return { title, body: "" };
@@ -92,7 +90,6 @@ function parseBugContent(
 
   const body = content.substring(descriptionIndex);
 
-  // Clean up the body by removing HTML comment lines
   const cleanedBody = body
     .split("\n")
     .filter((line) => !line.match(/^\s*<!--.*-->\s*$/))
@@ -102,25 +99,32 @@ function parseBugContent(
   return { title, body: cleanedBody };
 }
 
-export const issueBugCommand = new Command()
-  .name("bug")
-  .description("Submit a bug report")
-  .example("Submit a bug report", "swamp issue bug")
-  .option("-t, --title <title:string>", "Bug title (skips editor for title)")
+export const issueSecurityCommand = new Command()
+  .name("security")
+  .description(
+    "Submit a security vulnerability report (visible only to you and admins)",
+  )
+  .example("Submit a security report", "swamp issue security")
+  .option(
+    "-t, --title <title:string>",
+    "Vulnerability title (skips editor for title)",
+  )
   .option(
     "-b, --body <body:string>",
-    "Bug description (requires --title, skips editor entirely)",
+    "Vulnerability description (requires --title, skips editor entirely)",
   )
-  .option("-e, --email", "Open email client with pre-filled bug report")
+  .option(
+    "-e, --email",
+    "Open email client with pre-filled security report",
+  )
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, ["issue", "bug"]);
-    ctx.logger.debug`Submitting bug report`;
+    const ctx = createContext(options as GlobalOptions, ["issue", "security"]);
+    ctx.logger.debug`Submitting security report`;
 
-    // Resolve destination BEFORE collecting content so we don't waste the user's time
     const destination = await resolveDestination(ctx, options.email);
     if (destination.method === "abort") {
       await submitIssue(ctx, destination, {
-        type: "bug",
+        type: "security",
         title: "",
         body: "",
       });
@@ -145,20 +149,20 @@ export const issueBugCommand = new Command()
       }
 
       const tempFile = await Deno.makeTempFile({
-        prefix: "swamp-bug-",
+        prefix: "swamp-security-",
         suffix: ".md",
       });
 
       try {
-        await Deno.writeTextFile(tempFile, BUG_TEMPLATE);
-        ctx.logger.debug`Opening editor for bug report`;
+        await Deno.writeTextFile(tempFile, SECURITY_TEMPLATE);
+        ctx.logger.debug`Opening editor for security report`;
         await editorService.openFile(tempFile, { wait: true });
 
         const content = await Deno.readTextFile(tempFile);
-        const parsed = parseBugContent(content);
+        const parsed = parseSecurityContent(content);
         if (!parsed) {
           renderIssueCancelled(
-            { type: "bug", reason: "empty" },
+            { type: "security", reason: "empty" },
             ctx.outputMode,
           );
           return;
@@ -175,13 +179,13 @@ export const issueBugCommand = new Command()
       }
     }
 
-    ctx.logger.debug`Submitting bug report with title: ${title}`;
+    ctx.logger.debug`Submitting security report with title: ${title}`;
 
     await submitIssue(ctx, destination, {
-      type: "bug",
+      type: "security",
       title,
       body,
     });
 
-    ctx.logger.debug("Bug report submitted successfully");
+    ctx.logger.debug("Security report submitted successfully");
   });

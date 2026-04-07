@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { GitHubIssueService } from "../../infrastructure/github/github_issue_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -27,19 +26,17 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
  */
 export type IssueCreateData =
   | {
-    method: "created";
-    url: string;
+    method: "lab";
     number: number;
-    type: "bug" | "feature";
+    type: "bug" | "feature" | "security";
     title: string;
+    serverUrl: string;
   }
   | {
-    method: "url";
-    url: string;
-    type: "bug" | "feature";
+    method: "email";
+    mailtoUrl: string;
+    type: "bug" | "feature" | "security";
     title: string;
-    body: string;
-    labels: string[];
   };
 
 export type IssueCreateEvent =
@@ -50,33 +47,19 @@ export type IssueCreateEvent =
 export interface IssueCreateInput {
   title: string;
   body: string;
-  labels: string[];
-  type: "bug" | "feature";
-  repo?: string;
+  type: "bug" | "feature" | "security";
 }
 
 /** Dependencies for the issue create operation. */
 export interface IssueCreateDeps {
-  createIssue: (opts: {
+  submitToLab: (input: {
+    type: "bug" | "feature" | "security";
     title: string;
     body: string;
-    labels: string[];
-    repo?: string;
-  }) => Promise<
-    | { method: "created"; url: string; number: number }
-    | { method: "url"; url: string; body: string; labels: string[] }
-  >;
+  }) => Promise<{ number: number; serverUrl: string }>;
 }
 
-/** Wires real infrastructure into IssueCreateDeps. */
-export function createIssueCreateDeps(): IssueCreateDeps {
-  const githubService = new GitHubIssueService();
-  return {
-    createIssue: (opts) => githubService.createIssue(opts),
-  };
-}
-
-/** Creates a GitHub issue (bug or feature request). */
+/** Submits a bug or feature issue to the Lab API. */
 export async function* issueCreate(
   ctx: LibSwampContext,
   deps: IssueCreateDeps,
@@ -88,31 +71,21 @@ export async function* issueCreate(
     (async function* () {
       ctx.logger.debug`Creating ${input.type} issue: ${input.title}`;
 
-      const result = await deps.createIssue({
+      const labResult = await deps.submitToLab({
+        type: input.type,
         title: input.title,
         body: input.body,
-        labels: input.labels,
-        repo: input.repo,
       });
-
-      const data: IssueCreateData = result.method === "created"
-        ? {
-          method: "created",
-          url: result.url,
-          number: result.number,
+      yield {
+        kind: "completed",
+        data: {
+          method: "lab",
+          number: labResult.number,
           type: input.type,
           title: input.title,
-        }
-        : {
-          method: "url",
-          url: result.url,
-          type: input.type,
-          title: input.title,
-          body: result.body,
-          labels: result.labels,
-        };
-
-      yield { kind: "completed", data };
+          serverUrl: labResult.serverUrl,
+        },
+      };
     })(),
   );
 }

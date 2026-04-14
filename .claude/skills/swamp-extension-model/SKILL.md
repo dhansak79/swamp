@@ -1,6 +1,20 @@
 ---
 name: swamp-extension-model
-description: Create, test, and develop extension models for swamp — define Zod schemas, implement model interfaces, smoke test against live APIs, and write manifest.yaml. Use when creating models, writing manifest.yaml, testing extensions, or developing models. Covers all extension types (models, vaults, drivers, datastores, reports). Triggers on "create model", "new model type", "custom model", "extension model", "user model", "typescript model", "extend swamp", "build integration", "zod schema", "model plugin", "deno model", "extensions/models", "model development", "implement model", "smoke test", "test extension", "verify model", "test against API", "before push test", "test extension from another repo", "source extension loading", "manifest", "manifest.yaml", "write manifest".
+description: >
+  Create, test, and develop new extension models for swamp — define Zod
+  schemas, implement model interfaces, smoke test against live APIs, and write
+  manifest.yaml. Use ONLY when the user wants to author, build, or implement a
+  new TypeScript model in extensions/models/. Do NOT use for running or
+  executing existing models (that is swamp-model), orchestrating models in
+  workflows (that is swamp-workflow), debugging model errors (that is
+  swamp-troubleshooting), or publishing, pushing, or releasing extensions (that
+  is swamp-extension-publish). Triggers on "create model", "new model type",
+  "custom model", "extension model", "user model", "typescript model", "extend
+  swamp", "build integration", "zod schema", "model plugin", "deno model",
+  "extensions/models", "model development", "implement model", "smoke test",
+  "test extension", "verify model", "test against API", "before push test",
+  "test extension from another repo", "source extension loading", "manifest",
+  "manifest.yaml", "write manifest".
 ---
 
 # Swamp Extension Model

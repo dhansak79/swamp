@@ -109,6 +109,36 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
           "  Settings: " + (data.settingsUpdated ? "updated" : "unchanged"),
         );
         logger.info("  .gitignore: " + data.gitignoreAction);
+
+        // Surface the extension layout migration so users understand
+        // what happened to their pulled-extensions state. Without this,
+        // phase-two deletions are silent and users only discover the
+        // change via a warning on the next extension command.
+        if (data.extensionMigration) {
+          const m = data.extensionMigration;
+          logger.info("  Extension layout migration:");
+          if (m.renamedFileCount > 0) {
+            logger.info(
+              `    Moved ${m.renamedFileCount} legacy file(s) from ` +
+                `extensions/<type>/ to .swamp/pulled-extensions/<type>/`,
+            );
+          }
+          if (m.deletedPerExtension.length > 0) {
+            const total = m.deletedPerExtension.reduce(
+              (n, e) => n + e.fileCount,
+              0,
+            );
+            logger.info(
+              `    Removed ${total} outdated file(s) across ` +
+                `${m.deletedPerExtension.length} extension(s):`,
+            );
+            for (const { name, fileCount } of m.deletedPerExtension) {
+              logger.info(`      - ${name} (${fileCount} file(s))`);
+            }
+            logger
+              .info`    Run 'swamp extension install' to restore these extensions into the per-extension layout.`;
+          }
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);

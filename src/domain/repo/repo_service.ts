@@ -22,9 +22,12 @@ import { ensureDir } from "@std/fs";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import {
   readUpstreamExtensions,
+  type UpstreamExtensionsMap,
 } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { PULLED_TYPE_DIRS } from "../../libswamp/extensions/layout.ts";
 import type { RepoPath } from "./repo_path.ts";
 import {
+  SWAMP_DATA_DIR,
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
@@ -93,6 +96,22 @@ export interface RepoInitResult {
 }
 
 /**
+ * Summary of extension layout migration that ran during `repo upgrade`.
+ *
+ * - `renamedFileCount`: files renamed from the pre-`.swamp/` layout
+ *   (`extensions/<type>/…`) to `.swamp/pulled-extensions/<type>/…`.
+ * - `deletedPerExtension`: per extension, how many outdated files were
+ *   removed from disk. The lockfile entries remain, so the next
+ *   `swamp extension install` re-pulls each affected extension into
+ *   the per-extension subtree with integrity verification against the
+ *   lockfile's stored checksum.
+ */
+export interface ExtensionLayoutMigrationSummary {
+  renamedFileCount: number;
+  deletedPerExtension: Array<{ name: string; fileCount: number }>;
+}
+
+/**
  * Result of a repository upgrade operation.
  */
 export interface RepoUpgradeResult {
@@ -105,6 +124,13 @@ export interface RepoUpgradeResult {
   settingsUpdated: boolean;
   gitignoreAction: GitignoreAction;
   tool: AiTool;
+  /**
+   * Extension layout migration summary, present only when the upgrade
+   * actually moved or deleted files. Callers render this to tell users
+   * what happened to their pulled-extensions state so they know to run
+   * `swamp extension install` to restore phase-2-deleted content.
+   */
+  extensionMigration?: ExtensionLayoutMigrationSummary;
 }
 
 /**
@@ -341,8 +367,8 @@ export class RepoService {
     // Migrate from symlink-based layout to datastore layout
     await this.migrateFromSymlinks(repoPath);
 
-    // Migrate pulled extensions from extensions/ to .swamp/pulled-extensions/
-    await this.migrateExtensionLayout(repoPath);
+    // Migrate pulled extensions across on-disk layout generations.
+    const extensionMigration = await this.migrateExtensionLayout(repoPath);
 
     await this.markerRepo.write(repoPath, updatedMarker);
 
@@ -363,6 +389,7 @@ export class RepoService {
       settingsUpdated,
       gitignoreAction,
       tool,
+      ...(extensionMigration ? { extensionMigration } : {}),
     };
   }
 
@@ -1582,11 +1609,37 @@ export const SwampAudit: Plugin = async ({ directory }) => {
   }
 
   /**
-   * Migrates pulled extension files from extensions/{type}/ to
-   * .swamp/pulled-extensions/{type}/. Reads upstream_extensions.json
-   * to find tracked files, moves them, and updates the lockfile paths.
+   * Migrates pulled extensions across on-disk layout generations.
+   *
+   * Runs in two phases:
+   *
+   * **Phase 1 — gen-1 → gen-2 (rename):** moves files from
+   * `extensions/<type>/...` to `.swamp/pulled-extensions/<type>/...`
+   * and rewrites the lockfile's `files[]` in place. Safe because the
+   * same bytes move to a new path.
+   *
+   * **Phase 2 — gen-2 → current (selective delete; re-install on next
+   * `swamp extension install`):** when lockfile entries point at the
+   * flat layout (`.swamp/pulled-extensions/<type>/<file>`), those files
+   * may have been silently overwritten by sibling extensions because
+   * filenames collide across extensions in that layout. Rename cannot
+   * restore authentic content, so phase 2 deletes each gen-2 entry's
+   * tracked files and leaves the lockfile paths unchanged — the next
+   * `swamp extension install` invocation detects missing files and
+   * re-pulls from the registry, writing to the per-extension subtree
+   * under `.swamp/pulled-extensions/<ext-name>/<type>/...`. The
+   * lockfile's stored checksum (step 7 integrity anchor) guarantees
+   * re-installed bytes match what the user originally installed.
+   *
+   * Selective delete treats `Deno.errors.NotFound` as success
+   * (already-deleted files are expected on a retry after an
+   * interrupted prior pass). Any other IO error aborts the whole
+   * migration before any further changes so the repo is never left in
+   * a worse state than it started.
    */
-  private async migrateExtensionLayout(repoPath: RepoPath): Promise<void> {
+  private async migrateExtensionLayout(
+    repoPath: RepoPath,
+  ): Promise<ExtensionLayoutMigrationSummary | undefined> {
     // Find the lockfile — use marker's modelsDir or default
     const marker = await this.markerRepo.read(repoPath);
     const modelsDir = marker?.modelsDir ?? "extensions/models";
@@ -1595,10 +1648,38 @@ export const SwampAudit: Plugin = async ({ directory }) => {
 
     const upstream = await readUpstreamExtensions(lockfilePath);
     if (Object.keys(upstream).length === 0) {
-      return; // No extensions to migrate
+      return undefined;
     }
 
-    // Check if any files use the old layout (not in .swamp/)
+    const renamedFileCount = await this.migrateExtensionLayoutPhase1(
+      repoPath,
+      lockfilePath,
+      upstream,
+    );
+
+    // Re-read after phase 1 may have rewritten the lockfile.
+    const upstreamAfterPhase1 = await readUpstreamExtensions(lockfilePath);
+    const deletedPerExtension = await this.migrateExtensionLayoutPhase2(
+      repoPath,
+      upstreamAfterPhase1,
+    );
+
+    if (renamedFileCount === 0 && deletedPerExtension.length === 0) {
+      return undefined;
+    }
+    return { renamedFileCount, deletedPerExtension };
+  }
+
+  /**
+   * Phase 1: rename gen-1 paths (`extensions/<type>/...`) to gen-2
+   * paths (`.swamp/pulled-extensions/<type>/...`) and rewrite the
+   * lockfile's `files[]`.
+   */
+  private async migrateExtensionLayoutPhase1(
+    repoPath: RepoPath,
+    lockfilePath: string,
+    upstream: UpstreamExtensionsMap,
+  ): Promise<number> {
     const swampPrefix = ".swamp/";
     let hasLegacyFiles = false;
     for (const entry of Object.values(upstream)) {
@@ -1609,10 +1690,11 @@ export const SwampAudit: Plugin = async ({ directory }) => {
     }
 
     if (!hasLegacyFiles) {
-      return; // Already on new layout
+      return 0;
     }
 
-    // Mapping from old extension dir prefixes to new pulled-extension subdirs
+    let movedCount = 0;
+
     const dirMapping: Record<string, string> = {
       "extensions/models/": SWAMP_SUBDIRS.pulledModels + "/",
       "extensions/vaults/": SWAMP_SUBDIRS.pulledVaults + "/",
@@ -1622,21 +1704,16 @@ export const SwampAudit: Plugin = async ({ directory }) => {
       "extensions/reports/": SWAMP_SUBDIRS.pulledReports + "/",
     };
 
-    const gitTrackedFiles: string[] = [];
-
-    // Move files and update paths
     for (const [name, entry] of Object.entries(upstream)) {
       if (!entry.files) continue;
 
       const updatedFiles: string[] = [];
       for (const file of entry.files) {
         if (file.startsWith(swampPrefix)) {
-          // Already in .swamp/ — keep as-is (bundles, etc.)
           updatedFiles.push(file);
           continue;
         }
 
-        // Find matching dir prefix and compute new path
         let newPath: string | null = null;
         for (const [oldPrefix, newPrefix] of Object.entries(dirMapping)) {
           if (file.startsWith(oldPrefix)) {
@@ -1647,19 +1724,17 @@ export const SwampAudit: Plugin = async ({ directory }) => {
         }
 
         if (!newPath) {
-          // Unknown prefix — keep as-is but note it
           updatedFiles.push(file);
           continue;
         }
 
-        // Move the file
         const srcAbsolute = join(repoPath.value, file);
         const destAbsolute = join(repoPath.value, newPath);
 
         try {
           await ensureDir(dirname(destAbsolute));
           await Deno.rename(srcAbsolute, destAbsolute);
-          gitTrackedFiles.push(file);
+          movedCount++;
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) {
             // Source file missing — already removed or never committed
@@ -1674,13 +1749,11 @@ export const SwampAudit: Plugin = async ({ directory }) => {
       upstream[name] = { ...entry, files: updatedFiles };
     }
 
-    // Write updated lockfile
     await atomicWriteTextFile(
       lockfilePath,
       JSON.stringify(upstream, null, 2) + "\n",
     );
 
-    // Prune empty directories left behind
     for (const oldPrefix of Object.keys(dirMapping)) {
       const dirPath = join(repoPath.value, oldPrefix);
       try {
@@ -1689,6 +1762,109 @@ export const SwampAudit: Plugin = async ({ directory }) => {
         // Non-fatal
       }
     }
+    return movedCount;
+  }
+
+  /**
+   * Phase 2: delete any lockfile-tracked files that live in the flat
+   * `.swamp/pulled-extensions/<type>/<file>` (gen-2) layout. Leaves
+   * the lockfile entries untouched so the next
+   * `swamp extension install` re-pulls each affected extension into
+   * the per-extension subtree.
+   *
+   * NotFound is tolerated (expected on retry after an interrupted
+   * prior pass). Any other IO error aborts with a fatal error that
+   * leaves the lockfile — our coordination primitive — intact.
+   */
+  private async migrateExtensionLayoutPhase2(
+    repoPath: RepoPath,
+    upstream: UpstreamExtensionsMap,
+  ): Promise<Array<{ name: string; fileCount: number }>> {
+    const pulledPrefix = `${SWAMP_DATA_DIR}/pulled-extensions/`;
+
+    // Identify gen-2 files per extension: under pulled-extensions/ with
+    // a type dir as the first path segment (vs. @scope/name for the
+    // current layout). PULLED_TYPE_DIRS is shared with
+    // `classifyExtensionFile` in layout.ts — the two must agree on what
+    // counts as a gen-2 path.
+    const gen2ByExtension = new Map<string, string[]>();
+    for (const [name, entry] of Object.entries(upstream)) {
+      if (!entry.files) continue;
+      for (const file of entry.files) {
+        if (!file.startsWith(pulledPrefix)) continue;
+        const firstSegment = file.slice(pulledPrefix.length).split("/")[0];
+        if (PULLED_TYPE_DIRS.has(firstSegment)) {
+          const list = gen2ByExtension.get(name) ?? [];
+          list.push(file);
+          gen2ByExtension.set(name, list);
+        }
+      }
+    }
+
+    if (gen2ByExtension.size === 0) {
+      return [];
+    }
+
+    const parentDirs = new Set<string>();
+    const deletedPerExtension: Array<{ name: string; fileCount: number }> = [];
+    for (const [name, files] of gen2ByExtension) {
+      let deleted = 0;
+      for (const relPath of files) {
+        const absPath = join(repoPath.value, relPath);
+        try {
+          await Deno.remove(absPath);
+          parentDirs.add(dirname(absPath));
+          deleted++;
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) {
+            // Already deleted by a prior interrupted migration pass — skip.
+            continue;
+          }
+          throw new UserError(
+            `Could not remove ${relPath} during extension layout migration: ${
+              error instanceof Error ? error.message : String(error)
+            }. Inspect the path, remove it manually, and re-run ` +
+              `'swamp repo upgrade'. The lockfile has not been modified.`,
+          );
+        }
+      }
+      deletedPerExtension.push({ name, fileCount: deleted });
+    }
+
+    for (const dir of parentDirs) {
+      try {
+        await this.pruneEmptyDirsUp(dir, repoPath.value);
+      } catch {
+        // Non-fatal — leave empty dirs behind rather than failing the upgrade.
+      }
+    }
+
+    // Also sweep the gen-2 type-level dirs themselves. The flat-layout
+    // pull created empty `.swamp/pulled-extensions/<type>/` shells even
+    // for types where no files were installed, which pruneEmptyDirsUp
+    // doesn't reach because nothing under them was tracked. Remove any
+    // that are now empty so post-migration users don't see stale shells.
+    for (const type of PULLED_TYPE_DIRS) {
+      const typeDir = join(
+        repoPath.value,
+        SWAMP_DATA_DIR,
+        "pulled-extensions",
+        type,
+      );
+      try {
+        const entries: Deno.DirEntry[] = [];
+        for await (const entry of Deno.readDir(typeDir)) {
+          entries.push(entry);
+        }
+        if (entries.length === 0) {
+          await Deno.remove(typeDir);
+        }
+      } catch {
+        // Dir missing or non-empty — both fine, skip.
+      }
+    }
+
+    return deletedPerExtension;
   }
 
   /**

@@ -33,40 +33,27 @@ not use placeholder prefixes like `@local/` — they will be rejected during
 
 ## When to Create a Custom Model
 
-**Create an extension model when no built-in or community type exists for your
-use case.** Before creating one:
+Decide in this order:
 
-1. `swamp model type search <query>` — check local types
-2. `swamp extension search <query>` — check community extensions
-3. If a community extension exists, install it instead of building from scratch
-4. Only create a custom model if nothing exists
+1. `swamp model type search <query>` — built-in or installed type covers it? Use
+   it. Stop.
+2. `swamp extension search <query>` — community extension covers it? Install and
+   use. Trusted collectives (`@swamp/*`, `@si/*`, membership collectives)
+   auto-resolve on first use; check `swamp extension trust list`.
+3. Type exists but lacks a method you need? Add the method via
+   `export const extension` — see
+   [Extending Existing Model Types](#extending-existing-model-types). Do **not**
+   fall back to CLI wrappers when the domain model already exists.
+4. Nothing covers the task? Create a new extension model.
 
-Trusted collectives (`@swamp/*`, `@si/*`, membership collectives) auto-resolve
-on first use — no manual `extension pull` needed. Use
-`swamp extension trust list` to see trusted collectives.
+**Never** default to generic CLI types (`command/shell`) to wrap service
+integrations (S3, EC2, GitHub). Build a dedicated model for the service.
 
-If the task is transforming/analyzing existing model output into a report,
-create a report extension instead (see `swamp-report` skill). Extension models
-are for new data sources and integrations.
+**Reports vs. models:** transforming existing model output into a report is a
+report extension (see `swamp-report`). Extension models are for new data sources
+and integrations.
 
-**When a model type exists but is missing a method:**
-
-If the model type covers your domain but doesn't have the method you need:
-
-1. Confirm the type exists: `swamp model type describe <type> --json`
-2. Verify the method is missing from the output
-3. Add the method via `export const extension` — see
-   [Extending Existing Model Types](#extending-existing-model-types) below
-4. Do not fall back to CLI tools (`gh`, `aws`, `curl`) when the domain model
-   already exists
-
-**Important:** Do not default to generic CLI types (like `command/shell`) for
-specific service integrations. If the user wants to manage S3 buckets, EC2
-instances, or other resources, create a dedicated model for that service rather
-than wrapping CLI commands.
-
-**Verify CLI syntax:** If unsure about exact flags or subcommands, run
-`swamp help extension` for the complete, up-to-date CLI schema.
+**Verify CLI syntax:** run `swamp help extension` for the up-to-date schema.
 
 ## Quick Reference
 
@@ -132,6 +119,25 @@ export const model = {
   },
 };
 ```
+
+## Development Workflow
+
+From empty `extensions/models/` to published extension. Do not skip steps — each
+one's checkpoint catches a class of regression the next step can't.
+
+1. **Confirm nothing covers it** —
+   [When to Create a Custom Model](#when-to-create-a-custom-model).
+2. **Author the model file** — copy [Quick Start](#quick-start); `deno check`.
+3. **Verify registration** — `swamp model type search --json` shows the type.
+4. **Smoke test** against live APIs —
+   [references/smoke_testing.md](references/smoke_testing.md).
+5. **Unit tests** — colocate `*_test.ts`; `deno test` passes.
+6. **Adversarial review** —
+   [references/adversarial_review.md](references/adversarial_review.md).
+7. **Version + manifest** — `swamp extension version`,
+   `swamp extension fmt manifest.yaml --check`.
+8. **Dry-run, then publish** — `swamp extension push manifest.yaml --dry-run`,
+   then without `--dry-run`.
 
 ## Model Structure
 

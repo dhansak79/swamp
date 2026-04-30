@@ -25,8 +25,6 @@ import {
   type StepExecutor,
   WorkflowExecutionService,
 } from "./execution_service.ts";
-import { coerceToSuffix } from "./data_suffix.ts";
-import { resolveForEachStepName } from "./for_each_expansion_service.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
@@ -44,7 +42,6 @@ import type {
   WorkflowRunRepository,
 } from "./repositories.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
-import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -2447,169 +2444,6 @@ Deno.test("expandForEachSteps: does not append index when expression evaluates s
       true,
     );
   });
-});
-
-// --- resolveForEachStepName tests ---
-
-function makeStepContext(
-  vars: Record<string, unknown> = {},
-): Record<string, unknown> {
-  return {
-    self: {
-      id: "test-id",
-      name: "test",
-      ...vars,
-    },
-  };
-}
-
-Deno.test("resolveForEachStepName: resolves single expression in template", () => {
-  const cel = new CelEvaluator();
-  const ctx = makeStepContext({ item: "hello" });
-  const result = resolveForEachStepName(
-    "step-${{ self.item }}",
-    true,
-    ctx,
-    cel,
-    "fallback",
-  );
-  assertEquals(result.name, "step-hello");
-  assertEquals(result.hadEvalFailure, false);
-});
-
-Deno.test("resolveForEachStepName: resolves multiple expressions in template", () => {
-  const cel = new CelEvaluator();
-  const ctx = makeStepContext({ show: "MyShow", title: "Episode1" });
-  const result = resolveForEachStepName(
-    "dl-${{ self.show }}-${{ self.title }}",
-    true,
-    ctx,
-    cel,
-    "0",
-  );
-  assertEquals(result.name, "dl-MyShow-Episode1");
-  assertEquals(result.hadEvalFailure, false);
-});
-
-Deno.test("resolveForEachStepName: appends fallback suffix when expression fails", () => {
-  const cel = new CelEvaluator();
-  const ctx = makeStepContext();
-  const result = resolveForEachStepName(
-    "step-${{ self.missing.deep.field }}",
-    true,
-    ctx,
-    cel,
-    "0",
-  );
-  assertEquals(result.name, "step-${{ self.missing.deep.field }}-0");
-  assertEquals(result.hadEvalFailure, true);
-});
-
-Deno.test("resolveForEachStepName: appends fallback suffix when no expressions", () => {
-  const cel = new CelEvaluator();
-  const ctx = makeStepContext();
-  const result = resolveForEachStepName(
-    "download",
-    false,
-    ctx,
-    cel,
-    "my-key",
-  );
-  assertEquals(result.name, "download-my-key");
-  assertEquals(result.hadEvalFailure, false);
-});
-
-Deno.test("resolveForEachStepName: uses numeric fallback suffix for index-based naming", () => {
-  const cel = new CelEvaluator();
-  const ctx = makeStepContext();
-  const result = resolveForEachStepName(
-    "process",
-    false,
-    ctx,
-    cel,
-    "3",
-  );
-  assertEquals(result.name, "process-3");
-  assertEquals(result.hadEvalFailure, false);
-});
-
-Deno.test("resolveForEachStepName: resolves expression with object property access", () => {
-  const cel = new CelEvaluator();
-  const ctx = makeStepContext({ ep: { attributes: { show: "Futurama" } } });
-  const result = resolveForEachStepName(
-    "dl-${{ self.ep.attributes.show }}",
-    true,
-    ctx,
-    cel,
-    "0",
-  );
-  assertEquals(result.name, "dl-Futurama");
-  assertEquals(result.hadEvalFailure, false);
-});
-
-Deno.test("resolveForEachStepName: mixed resolved and failed expressions appends suffix", () => {
-  const cel = new CelEvaluator();
-  const ctx = makeStepContext({ item: "resolved" });
-  const result = resolveForEachStepName(
-    "${{ self.item }}-${{ self.nonexistent.deep }}",
-    true,
-    ctx,
-    cel,
-    "0",
-  );
-  assertEquals(result.name, "resolved-${{ self.nonexistent.deep }}-0");
-  assertEquals(result.hadEvalFailure, true);
-});
-
-// --- coerceToSuffix tests ---
-
-Deno.test("coerceToSuffix: returns string for primitive values", () => {
-  assertEquals(coerceToSuffix("hello"), "hello");
-  assertEquals(coerceToSuffix(42), "42");
-  assertEquals(coerceToSuffix(true), "true");
-});
-
-Deno.test("coerceToSuffix: returns empty string for null and undefined", () => {
-  assertEquals(coerceToSuffix(null), "");
-  assertEquals(coerceToSuffix(undefined), "");
-});
-
-Deno.test("coerceToSuffix: uses key property from object", () => {
-  assertEquals(coerceToSuffix({ key: "my-key", value: "stuff" }), "my-key");
-});
-
-Deno.test("coerceToSuffix: uses name property from object without key", () => {
-  assertEquals(coerceToSuffix({ name: "my-name", id: "123" }), "my-name");
-});
-
-Deno.test("coerceToSuffix: uses id property from object without key or name", () => {
-  assertEquals(coerceToSuffix({ id: "abc-123", other: "data" }), "abc-123");
-});
-
-Deno.test("coerceToSuffix: falls back to JSON.stringify for object without known properties", () => {
-  const val = { foo: "bar", baz: 1 };
-  assertEquals(coerceToSuffix(val), JSON.stringify(val));
-});
-
-Deno.test("coerceToSuffix: truncates long JSON.stringify output", () => {
-  const val = { data: "x".repeat(100) };
-  const result = coerceToSuffix(val);
-  assertEquals(result.length, 64);
-  assertEquals(result, JSON.stringify(val).slice(0, 64));
-});
-
-Deno.test("coerceToSuffix: prefers key over name and id", () => {
-  assertEquals(
-    coerceToSuffix({ key: "k", name: "n", id: "i" }),
-    "k",
-  );
-});
-
-Deno.test("coerceToSuffix: skips null/undefined properties", () => {
-  assertEquals(
-    coerceToSuffix({ key: null, name: undefined, id: "fallback-id" }),
-    "fallback-id",
-  );
 });
 
 // Regression test for lab issue #35: workflow-path MethodContext must carry

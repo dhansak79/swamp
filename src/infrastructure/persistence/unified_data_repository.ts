@@ -83,9 +83,15 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * the cache directory. The hook is no-op when no sync service is wired —
    * e.g. filesystem datastores, or when constructing the repository outside
    * a CLI sync lifecycle. See `design/datastores.md` for the contract.
+   *
+   * `relPath` is the absolute path of the file or directory about to be
+   * written or removed (when core can attribute the dirty signal to a single
+   * path); the wiring layer converts it to a cache-relative form before
+   * forwarding to the sync service. Pass `undefined` for genuine bulk
+   * mutations.
    */
-  private async notifyDirty(): Promise<void> {
-    if (this.markDirty) await this.markDirty();
+  private async notifyDirty(relPath?: string): Promise<void> {
+    if (this.markDirty) await this.markDirty(relPath);
   }
 
   /**
@@ -387,7 +393,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
     }
 
-    await this.notifyDirty();
+    // Pre-write notify with the data-name directory: version not yet
+    // allocated, so the truthful signal is "this subtree is changing."
+    await this.notifyDirty(this.getDataNameDir(type, modelId, data.name));
 
     // Check if data with this name already exists
     const existing = await this.findByName(type, modelId, data.name);
@@ -455,7 +463,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     content: Uint8Array,
   ): Promise<void> {
-    await this.notifyDirty();
+    await this.notifyDirty(this.getDataNameDir(type, modelId, dataName));
 
     const latestVersion = await this.getLatestVersion(type, modelId, dataName);
     if (latestVersion === null) {
@@ -574,7 +582,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version?: number,
   ): Promise<void> {
-    await this.notifyDirty();
+    // Per-version delete → version directory; full-name delete → data-name
+    // directory (entire subtree removed).
+    await this.notifyDirty(
+      version !== undefined
+        ? this.getPath(type, modelId, dataName, version)
+        : this.getDataNameDir(type, modelId, dataName),
+    );
 
     if (version !== undefined) {
       // Delete specific version
@@ -641,9 +655,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     dataName: string,
   ): Promise<void> {
-    await this.notifyDirty();
-
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+    await this.notifyDirty(dataNameDir);
+
     const latestSymlink = join(dataNameDir, "latest");
 
     try {
@@ -671,6 +685,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       newVersion: number;
     }
   > {
+    // Bulk: rename writes a new data under newName (via the inner save()
+    // which emits its own per-path signal) plus a tombstone, content,
+    // and latest-marker writes under oldName. The upfront bulk-invalidate
+    // ensures extensions tracking per-path dirty state fall back to a
+    // full walk for this operation — see rule 8 on
+    // DatastoreSyncService.markDirty.
     await this.notifyDirty();
 
     // Read the latest version of old data
@@ -829,7 +849,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
     }
 
-    await this.notifyDirty();
+    // Pre-write notify with the data-name directory: version not yet
+    // allocated. Same granularity as save/append.
+    await this.notifyDirty(this.getDataNameDir(type, modelId, data.name));
 
     // Validate ownership if data with this name already exists
     const existing = await this.findByName(type, modelId, data.name);
@@ -866,7 +888,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     version: number,
   ): Promise<{ size: number; checksum: string }> {
-    await this.notifyDirty();
+    // Version is known here (allocateVersion has already run); pass the
+    // version directory as the per-call signal.
+    await this.notifyDirty(this.getPath(type, modelId, data.name, version));
 
     const contentPath = this.getContentPath(
       type,

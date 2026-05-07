@@ -210,9 +210,12 @@ Deno.test("resolveRepoDir returns cli value when provided", () => {
   const original = Deno.env.get("SWAMP_REPO_DIR");
   try {
     Deno.env.set("SWAMP_REPO_DIR", "/tmp/env-repo");
-    assertPathEquals(resolveRepoDir("/tmp/flag-repo"), "/tmp/flag-repo");
-    // explicit "." from flag should win over env var
-    assertEquals(resolveRepoDir("."), ".");
+    assertPathEquals(
+      resolveRepoDir("/tmp/flag-repo"),
+      resolve("/tmp/flag-repo"),
+    );
+    // explicit "." from flag resolves to absolute cwd
+    assertPathEquals(resolveRepoDir("."), resolve("."));
   } finally {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
     else Deno.env.delete("SWAMP_REPO_DIR");
@@ -223,18 +226,20 @@ Deno.test("resolveRepoDir returns SWAMP_REPO_DIR when cli value undefined", () =
   const original = Deno.env.get("SWAMP_REPO_DIR");
   try {
     Deno.env.set("SWAMP_REPO_DIR", "/tmp/env-repo");
-    assertPathEquals(resolveRepoDir(undefined), "/tmp/env-repo");
+    assertPathEquals(resolveRepoDir(undefined), resolve("/tmp/env-repo"));
   } finally {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
     else Deno.env.delete("SWAMP_REPO_DIR");
   }
 });
 
-Deno.test('resolveRepoDir returns "." when neither cli value nor env var set', () => {
+Deno.test("resolveRepoDir returns absolute cwd when neither cli value nor env var set", () => {
   const original = Deno.env.get("SWAMP_REPO_DIR");
   try {
     Deno.env.delete("SWAMP_REPO_DIR");
-    assertEquals(resolveRepoDir(undefined), ".");
+    const result = resolveRepoDir(undefined);
+    assertEquals(isAbsolute(result), true);
+    assertPathEquals(result, Deno.cwd());
   } finally {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
   }
@@ -244,7 +249,9 @@ Deno.test("resolveRepoDir treats empty SWAMP_REPO_DIR as unset", () => {
   const original = Deno.env.get("SWAMP_REPO_DIR");
   try {
     Deno.env.set("SWAMP_REPO_DIR", "");
-    assertEquals(resolveRepoDir(undefined), ".");
+    const result = resolveRepoDir(undefined);
+    assertEquals(isAbsolute(result), true);
+    assertPathEquals(result, Deno.cwd());
   } finally {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
     else Deno.env.delete("SWAMP_REPO_DIR");

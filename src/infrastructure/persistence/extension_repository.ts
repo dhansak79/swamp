@@ -26,6 +26,7 @@ import type {
   ExtensionTypeRow,
 } from "./extension_catalog_store.ts";
 import { DuplicateTypeError } from "./duplicate_type_error.ts";
+import type { LocalManifestIdentity } from "./local_manifest_reader.ts";
 import type { LockfileRepository } from "./lockfile_repository.ts";
 import {
   type Extension,
@@ -129,6 +130,7 @@ export class ExtensionRepository {
 
   private readonly lockfileRepository: LockfileRepository;
   private readonly repoRoot: string;
+  private readonly localManifestIdentity: LocalManifestIdentity | null;
   /**
    * Tracks rows we've already info-logged for the empty-version
    * fallback in this process's lifetime. The write-back makes
@@ -142,10 +144,12 @@ export class ExtensionRepository {
     catalog: ExtensionCatalogStore;
     lockfileRepository: LockfileRepository;
     repoRoot: string;
+    localManifestIdentity?: LocalManifestIdentity | null;
   }) {
     this.legacyStore = args.catalog;
     this.lockfileRepository = args.lockfileRepository;
     this.repoRoot = canonicalizePath(args.repoRoot);
+    this.localManifestIdentity = args.localManifestIdentity ?? null;
     this.fallbackLoggedSourcePaths = new Set();
   }
 
@@ -336,7 +340,12 @@ export class ExtensionRepository {
       const identity = this.resolveIdentity(row);
       if (identity === null) continue;
 
-      const origin = inferOrigin(identity.name);
+      const origin = (
+          this.localManifestIdentity &&
+          identity.name === this.localManifestIdentity.name
+        )
+        ? "local" as ExtensionOrigin
+        : inferOrigin(identity.name);
       const extensionRoot = computeExtensionRoot(
         origin,
         identity.name,
@@ -417,8 +426,16 @@ export class ExtensionRepository {
       }
       name = derived.name;
       version = derived.version;
+      // When a manifest declares identity, use it for local rows
+      // instead of the synthetic @local/<basename>@0.0.0.
+      if (
+        version.length > 0 && this.localManifestIdentity &&
+        name.startsWith("@local/")
+      ) {
+        name = this.localManifestIdentity.name;
+        version = this.localManifestIdentity.version;
+      }
       if (version.length > 0) {
-        // Locals always have version="0.0.0" — write back both columns.
         this.legacyStore.updateExtensionIdentity(
           row.source_path,
           name,
@@ -525,13 +542,13 @@ export class ExtensionRepository {
 /**
  * Derives an Extension's origin from its name. Pulled extensions are
  * scoped (`@scope/name`) and are NOT under the `@local/` namespace;
- * locals are always `@local/<basename>`.
+ * locals are `@local/<basename>` (synthetic) or manifest-sourced.
  *
- * For W1b, source-mounted extensions roll up under the local synthetic
- * aggregate (per design doc lines 264-273) and have name `@local/...`.
- * The repository treats them as `"local"` for origin purposes — the
- * source-mounted distinction matters at the lifecycle layer (W2), not
- * at the persistence layer.
+ * When a manifest declares identity, the local extension uses the
+ * manifest name (e.g. `@hivemq/terraform-harvester`) which does NOT
+ * start with `@local/`. Callers in `materialiseExtensions` check the
+ * `localManifestIdentity` first to handle this case before falling
+ * back to this name-prefix heuristic.
  */
 function inferOrigin(extensionName: string): ExtensionOrigin {
   return extensionName.startsWith("@local/") ? "local" : "pulled";

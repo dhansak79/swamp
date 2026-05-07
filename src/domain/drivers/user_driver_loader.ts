@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
-import { dirname, join, resolve, toFileUrl } from "@std/path";
+import { dirname, join, resolve, SEPARATOR, toFileUrl } from "@std/path";
 import { isZodSchemaLike } from "../zod_compat.ts";
 import { getLogger } from "@logtape/logtape";
 import {
@@ -294,11 +294,17 @@ export class UserDriverLoader {
         // No bundle on disk yet — first-run bootstrap.
       }
 
-      // Fast-path for pulled extensions with bare specifiers and no
-      // repo-side deno.json. bundleExtension would always fail for them
-      // and we'd wastefully spawn Deno before falling back to the
-      // cached bundle anyway.
-      if (bundleExists && isExpectedBundleFailure(absolutePath, this.repoDir)) {
+      // Fast-path for pulled extensions only — user-developed extensions
+      // must always attempt the build (swamp-club#274).
+      const isPulled = this.repoDir &&
+        resolve(boundaryDir).startsWith(
+          join(resolve(this.repoDir), SWAMP_DATA_DIR, "pulled-extensions") +
+            SEPARATOR,
+        );
+      if (
+        bundleExists && isPulled &&
+        isExpectedBundleFailure(absolutePath, this.repoDir)
+      ) {
         return { js: await Deno.readTextFile(bundlePath), fromCache: true };
       }
 

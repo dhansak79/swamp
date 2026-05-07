@@ -150,20 +150,26 @@ export class ReconcileFromDiskService {
     const existingExtensions = this.repository.loadAll();
     const totalExistingRows = countSources(existingExtensions);
 
-    const reconciledExtensions = await this.reconcileAll(
-      existingExtensions,
-      transitions,
-    );
+    const { extensions: reconciledExtensions, migrationTransitions } =
+      await this.reconcileAll(
+        existingExtensions,
+        transitions,
+      );
 
+    // Identity-migration tombstones are expected mass-transitions, not
+    // repair anomalies. Exclude them from the guardrail ratio so a
+    // version bump in a repo with ≥10 local sources doesn't permanently
+    // block the migration.
+    const repairCount = transitions.length - migrationTransitions;
     const GUARDRAIL_MIN_ROWS = 10;
     if (
-      transitions.length > 0 && totalExistingRows >= GUARDRAIL_MIN_ROWS
+      repairCount > 0 && totalExistingRows >= GUARDRAIL_MIN_ROWS
     ) {
-      const ratio = transitions.length / totalExistingRows;
+      const ratio = repairCount / totalExistingRows;
       if (ratio > 0.5) {
-        if (!dryRun) this.markAllKindsPopulated();
+        if (!dryRun) this.markKindsPopulated();
         logger
-          .warn`Skipped catalog repair: too many entries would change (${transitions.length}/${totalExistingRows}). Run ${"swamp doctor extensions"} to inspect.`;
+          .warn`Skipped catalog repair: too many entries would change (${repairCount}/${totalExistingRows}). Run ${"swamp doctor extensions"} to inspect.`;
         return { transitions, applied: false };
       }
     }
@@ -187,9 +193,10 @@ export class ReconcileFromDiskService {
   private async reconcileAll(
     existingExtensions: Extension[],
     transitions: ReconcileTransition[],
-  ): Promise<Extension[]> {
+  ): Promise<{ extensions: Extension[]; migrationTransitions: number }> {
     const cache = createFreshnessCache();
     const result: Extension[] = [];
+    let migrationTransitions = 0;
 
     // Gather ALL local + source-mounted on-disk sources into one map,
     // then reconcile the @local/<repo> aggregate once. Prevents the
@@ -202,19 +209,12 @@ export class ReconcileFromDiskService {
       cache,
     );
 
-    // Atomic identity migration: tombstone stale local-origin aggregates
-    // BEFORE the new aggregate. saveAll processes in array order —
-    // tombstones must come first so removeBySourcePath deletes old rows
-    // before upsertWithIdentity writes new ones at the same paths.
-    if (localExt) {
-      for (const existing of existingExtensions) {
-        if (existing.origin !== "local") continue;
-        if (existing.name === localExt.name) continue;
-        result.push(tombstoneAll(existing));
-      }
-      result.push(localExt);
-    }
-
+    // Pulled extensions next. Processed BEFORE the local aggregate in
+    // the result array so saveAll DELETEs pulled-orphan rows before
+    // local INSERTs. Prevents the manifest-deletion case from losing
+    // data: old manifest-named rows are inferred as "pulled" after the
+    // manifest is removed, orphan-tombstoned, and their DELETEs must
+    // not clobber the new @local/ rows at the same source_path.
     const pulledExts = await this.reconcilePulled(
       existingExtensions,
       transitions,
@@ -222,7 +222,35 @@ export class ReconcileFromDiskService {
     );
     result.push(...pulledExts);
 
-    return result;
+    // Atomic identity migration: tombstone stale local-origin aggregates
+    // BEFORE the new aggregate. saveAll processes in array order —
+    // tombstones must come first so removeBySourcePath deletes old rows
+    // before upsertWithIdentity writes new ones at the same paths.
+    if (localExt) {
+      for (const existing of existingExtensions) {
+        if (existing.origin !== "local") continue;
+        if (
+          existing.name === localExt.name &&
+          existing.version === localExt.version
+        ) continue;
+        const reason =
+          `identity migration: ${existing.name}@${existing.version} → ${localExt.name}@${localExt.version}`;
+        for (const [loc, source] of existing.sources) {
+          if (source.state.tag === "Tombstoned") continue;
+          transitions.push({
+            source: loc,
+            fromState: source.state.tag,
+            toState: "Tombstoned",
+            reason,
+          });
+          migrationTransitions++;
+        }
+        result.push(tombstoneAll(existing));
+      }
+      result.push(localExt);
+    }
+
+    return { extensions: result, migrationTransitions };
   }
 
   private async reconcileLocalAndSourceMounted(
@@ -270,15 +298,30 @@ export class ReconcileFromDiskService {
       }
     }
 
-    let ext = existing ?? (manifest
-      ? makeExtension({
+    let ext: Extension;
+    if (existing && existing.version !== localVersion) {
+      ext = makeExtension({
+        name: localName,
+        version: localVersion,
+        origin: "local",
+        extensionRoot: this.repoDir,
+        sources: existing.sources.values(),
+      });
+      logger
+        .info`Local extension ${localName} version migrated: ${existing.version} → ${localVersion}`;
+    } else if (existing) {
+      ext = existing;
+    } else if (manifest) {
+      ext = makeExtension({
         name: localName,
         version: localVersion,
         origin: "local",
         extensionRoot: this.repoDir,
         sources: [],
-      })
-      : makeLocalExtension({ repoRoot: this.repoDir, basename }));
+      });
+    } else {
+      ext = makeLocalExtension({ repoRoot: this.repoDir, basename });
+    }
 
     ext = await this.reconcileExtension(
       ext,
@@ -560,7 +603,7 @@ export class ReconcileFromDiskService {
     }
   }
 
-  private markAllKindsPopulated(): void {
+  private markKindsPopulated(): void {
     const catalog = this.repository.legacyStore;
     const kinds: ExtensionKind[] = [
       "model",
@@ -573,6 +616,14 @@ export class ReconcileFromDiskService {
     for (const kind of kinds) {
       catalog.markPopulated(kind);
     }
+  }
+
+  private markAllKindsPopulated(): void {
+    this.markKindsPopulated();
+    const m = this.localManifestIdentity;
+    this.repository.legacyStore.setManifestIdentity(
+      m ? `${m.name}@${m.version}` : null,
+    );
   }
 }
 

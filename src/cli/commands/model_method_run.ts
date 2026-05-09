@@ -47,6 +47,7 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -78,10 +79,19 @@ export const modelMethodRunCommand = new Command()
     "swamp model method run my-server deploy --input env=prod",
   )
   .example(
+    "Direct type execution",
+    "swamp model @swamp/aws/ec2/vpc method run create my-vpc --input region=us-east-1",
+  )
+  .example(
     "Pass an array or object input (JSON-typed via :json suffix)",
     'swamp model method run my-server search --input \'keywords:json=["a","b"]\'',
   )
-  .arguments("<model_id_or_name:model_name> <method_name:string>")
+  .description(
+    "Execute a method on a model. With @type prefix, auto-creates the definition if needed.",
+  )
+  .arguments(
+    "<model_or_type:model_name> <method_name:string> [definition_name:string]",
+  )
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
@@ -144,9 +154,23 @@ export const modelMethodRunCommand = new Command()
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
       options: AnyOptions,
-      modelIdOrName: string,
+      modelOrType: string,
       methodName: string,
+      definitionNameArg?: string,
     ) {
+      const isDirectExecution = modelOrType.startsWith("@");
+      const typeArg = isDirectExecution ? modelOrType : undefined;
+      const modelIdOrName = isDirectExecution
+        ? (definitionNameArg ?? methodName)
+        : modelOrType;
+      const definitionName = isDirectExecution ? definitionNameArg : undefined;
+
+      if (isDirectExecution && !definitionNameArg) {
+        throw new UserError(
+          "Direct type execution requires a definition name: " +
+            `swamp model ${modelOrType} method run ${methodName} <name>`,
+        );
+      }
       const ctx = createContext(options as GlobalOptions, [
         "model",
         "method",
@@ -240,6 +264,26 @@ export const modelMethodRunCommand = new Command()
             cleanup: () => runFileSink.unregister(logCategory),
           };
         },
+        createAndSaveDefinition: isDirectExecution
+          ? async (type, definition) => {
+            const autoDefRepo = new YamlDefinitionRepository(
+              repoDir,
+              undefined,
+              swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+              false,
+            );
+            await autoDefRepo.save(type, definition);
+          }
+          : undefined,
+        getDefinitionPath: isDirectExecution
+          ? (type, id) => {
+            return join(
+              swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+              type.toDirectoryPath(),
+              `${id}.yaml`,
+            );
+          }
+          : undefined,
       };
 
       const timeoutMs = options.timeout
@@ -283,6 +327,8 @@ export const modelMethodRunCommand = new Command()
             methodName,
             inputs,
             lastEvaluated: options.lastEvaluated as boolean,
+            typeArg,
+            definitionName,
             runtimeTags,
             skipCheckNames: options.skipCheck as string[] | undefined,
             skipCheckLabels: options.skipCheckLabel as string[] | undefined,

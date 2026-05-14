@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { Job } from "./job.ts";
+import { Job, JobSchema } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
@@ -247,4 +247,25 @@ Deno.test("Job.fromData and toData roundtrip correctly", () => {
   assertEquals(restored.steps.length, original.steps.length);
   assertEquals(restored.dependsOn.length, original.dependsOn.length);
   assertEquals(restored.weight, original.weight);
+});
+
+Deno.test("JobSchema throws clear error for string dependsOn entries", () => {
+  assertThrows(
+    () => {
+      JobSchema.parse({
+        name: "deploy",
+        steps: [{
+          name: "step1",
+          task: {
+            type: "model_method",
+            modelIdOrName: "my-model",
+            methodName: "run",
+          },
+        }],
+        dependsOn: ["build-job"],
+      });
+    },
+    Error,
+    "dependsOn entries must be objects, not strings",
+  );
 });

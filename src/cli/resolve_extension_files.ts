@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { basename, dirname, isAbsolute, join, resolve } from "@std/path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  resolve,
+} from "@std/path";
 import type { Logger } from "@logtape/logtape";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
@@ -46,6 +53,7 @@ export interface ResolveExtensionFilesContext {
   manifestPath: string;
   repoContext: RepositoryContext;
   logger: Logger;
+  extensionsDir?: string;
 }
 
 export interface ResolvedExtensionFiles {
@@ -116,11 +124,22 @@ export async function resolveExtensionFiles(
   ctx: ResolveExtensionFilesContext,
 ): Promise<ResolvedExtensionFiles> {
   const { repoDir, manifestPath, repoContext, logger } = ctx;
+  const extensionsDir = ctx.extensionsDir ?? repoDir;
+
+  const ext = extname(manifestPath).toLowerCase();
+  if (ext === ".ts" || ext === ".js") {
+    throw new UserError(
+      `Expected a manifest path but got a TypeScript/JavaScript file: ${manifestPath}\n` +
+        "Pass the manifest directory or manifest.yaml path instead.\n\n" +
+        "Example:\n" +
+        "  swamp extension fmt extensions/models/my-model/manifest.yaml",
+    );
+  }
 
   // 1. Read and parse manifest
   const absoluteManifestPath = isAbsolute(manifestPath)
     ? manifestPath
-    : resolve(repoDir, manifestPath);
+    : resolve(extensionsDir, manifestPath);
 
   let manifestContent: string;
   try {
@@ -176,19 +195,19 @@ export async function resolveExtensionFiles(
   const useManifestBase = manifest.paths.base === "manifest";
   const modelsDir = useManifestBase
     ? manifestDir
-    : resolve(repoDir, resolveModelsDir(marker));
+    : resolve(extensionsDir, resolveModelsDir(marker));
   const vaultsDir = useManifestBase
     ? manifestDir
-    : resolve(repoDir, resolveVaultsDir(marker));
+    : resolve(extensionsDir, resolveVaultsDir(marker));
   const driversDir = useManifestBase
     ? manifestDir
-    : resolve(repoDir, resolveDriversDir(marker));
+    : resolve(extensionsDir, resolveDriversDir(marker));
   const datastoresDir = useManifestBase
     ? manifestDir
-    : resolve(repoDir, resolveDatastoresDir(marker));
+    : resolve(extensionsDir, resolveDatastoresDir(marker));
   const reportsDir = useManifestBase
     ? manifestDir
-    : resolve(repoDir, resolveReportsDir(marker));
+    : resolve(extensionsDir, resolveReportsDir(marker));
 
   // 3. Collect model files from manifest
   const modelEntryPoints: string[] = [];

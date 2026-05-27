@@ -72,6 +72,9 @@ export interface ExtensionRegistryInfo {
   name: string;
   description: string;
   latestVersion: string;
+  deprecatedAt?: string | null;
+  deprecationReason?: string | null;
+  supersededBy?: string | null;
 }
 
 /** Result of installing a single extension (no rendering). */
@@ -172,6 +175,12 @@ export class ConflictError extends UserError {
 
 export type ExtensionPullEvent =
   | { kind: "installing" }
+  | {
+    kind: "deprecated_warning";
+    name: string;
+    reason: string | null;
+    supersededBy: string | null;
+  }
   | {
     kind: "orphans-pruned";
     name: string;
@@ -1158,8 +1167,21 @@ export async function* extensionPull(
     (async function* () {
       yield { kind: "installing" } as const;
 
+      const prefetchedInfo = await deps.getExtension(input.ref.name);
+      if (prefetchedInfo?.deprecatedAt != null) {
+        yield {
+          kind: "deprecated_warning" as const,
+          name: input.ref.name,
+          reason: prefetchedInfo.deprecationReason ?? null,
+          supersededBy: prefetchedInfo.supersededBy ?? null,
+        };
+      }
+
       const installCtx: InstallContext = {
-        getExtension: deps.getExtension,
+        getExtension: (name) =>
+          name === input.ref.name && prefetchedInfo
+            ? Promise.resolve(prefetchedInfo)
+            : deps.getExtension(name),
         downloadArchive: deps.downloadArchive,
         getChecksum: deps.getChecksum,
         logger: ctx.logger,

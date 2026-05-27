@@ -59,13 +59,23 @@ export interface FailedStatus {
   error: string;
 }
 
+/** Extension is deprecated in the registry. */
+export interface DeprecatedStatus {
+  status: "deprecated";
+  name: string;
+  installedVersion: string;
+  deprecationReason: string | null;
+  supersededBy: string | null;
+}
+
 /** Discriminated union of all possible update statuses. */
 export type ExtensionUpdateStatus =
   | UpToDateStatus
   | UpdateAvailableStatus
   | UpdatedStatus
   | NotFoundStatus
-  | FailedStatus;
+  | FailedStatus
+  | DeprecatedStatus;
 
 /** Summary counts for the update operation. */
 export interface UpdateSummary {
@@ -93,7 +103,12 @@ export function checkExtensionVersion(
   name: string,
   installedVersion: string,
   latestVersion: string | null,
-): UpToDateStatus | UpdateAvailableStatus | NotFoundStatus {
+  deprecation?: {
+    deprecatedAt: string | null;
+    deprecationReason: string | null;
+    supersededBy: string | null;
+  },
+): UpToDateStatus | UpdateAvailableStatus | NotFoundStatus | DeprecatedStatus {
   if (latestVersion === null) {
     return {
       status: "not_found",
@@ -107,17 +122,31 @@ export function checkExtensionVersion(
   const latest = CalVer.create(latestVersion);
   const cmp = CalVer.compare(installed, latest);
 
-  if (cmp >= 0) {
+  // Version comparison takes precedence over deprecation so that
+  // security patches and updates are never silently skipped.
+  // Deprecation is only surfaced when the extension is already
+  // up-to-date — the pull warning covers the deprecated+update case.
+  if (cmp < 0) {
     return {
-      status: "up_to_date",
+      status: "update_available",
       name,
       installedVersion,
       latestVersion,
     };
   }
 
+  if (deprecation?.deprecatedAt != null) {
+    return {
+      status: "deprecated",
+      name,
+      installedVersion,
+      deprecationReason: deprecation.deprecationReason,
+      supersededBy: deprecation.supersededBy,
+    };
+  }
+
   return {
-    status: "update_available",
+    status: "up_to_date",
     name,
     installedVersion,
     latestVersion,
@@ -148,6 +177,8 @@ export function buildUpdateResult(
       case "not_found":
       case "failed":
         failed++;
+        break;
+      case "deprecated":
         break;
     }
   }

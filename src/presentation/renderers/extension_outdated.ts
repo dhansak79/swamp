@@ -30,6 +30,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 export interface ExtensionOutdatedResult {
   extensions: ExtensionUpdateStatus[];
   hasUpdateAvailable: boolean;
+  hasDeprecated: boolean;
 }
 
 export type ExtensionOutdatedEvent = {
@@ -75,6 +76,15 @@ class LogExtensionOutdatedRenderer implements Renderer<ExtensionOutdatedEvent> {
                   `${paddedName}  v${ext.installedVersion}  (check failed: ${ext.error})`,
               });
               break;
+            case "deprecated": {
+              let line = `${paddedName}  v${ext.installedVersion}  (deprecated`;
+              if (ext.supersededBy) {
+                line += ` — use ${ext.supersededBy} instead`;
+              }
+              line += ")";
+              logger.warn("{line}", { line });
+              break;
+            }
               // up_to_date and updated are filtered before reaching the
               // renderer; updated never appears in checkOnly mode.
           }
@@ -104,6 +114,7 @@ class JsonExtensionOutdatedRenderer
             {
               extensions: e.data.extensions,
               hasUpdateAvailable: e.data.hasUpdateAvailable,
+              hasDeprecated: e.data.hasDeprecated,
             },
             null,
             2,

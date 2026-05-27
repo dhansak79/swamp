@@ -59,7 +59,8 @@ export function filterOutdated(
   return statuses.filter((s) =>
     s.status === "update_available" ||
     s.status === "not_found" ||
-    s.status === "failed"
+    s.status === "failed" ||
+    s.status === "deprecated"
   );
 }
 
@@ -138,11 +139,14 @@ export const extensionOutdatedCommand = new Command()
     const hasUpdateAvailable = filtered.some(
       (s) => s.status === "update_available",
     );
+    const hasDeprecated = filtered.some(
+      (s) => s.status === "deprecated",
+    );
 
     const renderer = createExtensionOutdatedRenderer(cliCtx.outputMode);
     await renderer.handlers().completed({
       kind: "completed",
-      data: { extensions: filtered, hasUpdateAvailable },
+      data: { extensions: filtered, hasUpdateAvailable, hasDeprecated },
     });
 
     cliCtx.logger.debug("Extension outdated command completed");

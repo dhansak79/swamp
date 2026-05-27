@@ -24,6 +24,7 @@ import {
   type ExtensionUpdateStatus,
 } from "../../domain/extensions/extension_update_service.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -95,6 +96,7 @@ export interface ExtensionUpdateDeps {
 export async function createExtensionUpdateDeps(options: {
   lockfilePath: string;
   serverUrl?: string;
+  identity?: ClientIdentity;
   installExtension: (
     name: string,
     version: string,
@@ -102,6 +104,7 @@ export async function createExtensionUpdateDeps(options: {
 }): Promise<ExtensionUpdateDeps> {
   const extensionClient = new ExtensionApiClient(
     options.serverUrl ?? resolveServerUrl(),
+    options.identity,
   );
   return {
     lockfileRepository: await LockfileRepository.create(options.lockfilePath),

@@ -30,6 +30,11 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
+import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -92,6 +97,16 @@ export const serveCommand = new Command()
       datastoreConfig,
       syncService,
     };
+
+    // Eagerly load extension registries so failures surface at startup
+    // rather than silently on first scheduled/webhook execution.
+    await Promise.all([
+      modelRegistry.ensureLoaded(),
+      vaultTypeRegistry.ensureLoaded(),
+      driverTypeRegistry.ensureLoaded(),
+      datastoreTypeRegistry.ensureLoaded(),
+      reportRegistry.ensureLoaded(),
+    ]);
 
     const ac = new AbortController();
     const enableSchedule = options.schedule !== false;

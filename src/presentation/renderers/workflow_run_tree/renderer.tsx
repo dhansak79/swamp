@@ -75,6 +75,7 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
       step_completed: forward,
       step_skipped: forward,
       step_failed: forward,
+      approval_requested: forward,
       model_resolved: forward,
       env_var_warning: forward,
       method_executing: forward,
@@ -87,8 +88,25 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
         if (e.run.status === "failed") this._failed = true;
         forward(e);
         this.bridge.close();
-        // Allow brief render cycle for the final frame
         setTimeout(() => this.cleanup?.(), 100);
+      },
+      suspended: (e) => {
+        forward(e);
+        this.bridge.close();
+        setTimeout(() => {
+          this.cleanup?.();
+          const wf = this.workflowName;
+          const step = e.stepId;
+          console.log("");
+          console.log(
+            `Workflow suspended — awaiting approval on step "${step}"`,
+          );
+          console.log("");
+          console.log(`  swamp workflow approve ${wf} ${step}`);
+          console.log(`  swamp workflow reject  ${wf} ${step}`);
+          console.log("");
+          console.log(`After approval: swamp workflow resume ${wf}`);
+        }, 100);
       },
       error: (e) => {
         forward(e);

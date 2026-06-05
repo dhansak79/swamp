@@ -1267,6 +1267,7 @@ export {
 export {
   datastoreNamespaceMigrate,
   type DirSize,
+  INFRASTRUCTURE_FILES,
   type NamespaceMigrateCompletedData,
   type NamespaceMigrateDeps,
   type NamespaceMigrateEvent,

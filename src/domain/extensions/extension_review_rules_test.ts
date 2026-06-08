@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { join, SEPARATOR } from "@std/path";
 import {
   applicableDimensions,
   buildReviewReportSkeleton,
@@ -279,6 +280,60 @@ Deno.test("reviewReportPath: deterministic and hash-bound", () => {
   assertEquals(a, b);
   const c = reviewReportPath("@acme/thing", "ffffffffffffffffbb", "/tmp");
   assert(a !== c); // different hash → different path
+});
+
+Deno.test("reviewReportPath: explicit baseTmpDir takes precedence over env var", () => {
+  const prev = Deno.env.get("SWAMP_EXTENSION_REVIEW_DIR");
+  try {
+    Deno.env.set(
+      "SWAMP_EXTENSION_REVIEW_DIR",
+      join(SEPARATOR, "ci", "reviews"),
+    );
+    const p = reviewReportPath(
+      "@acme/thing",
+      "abc123",
+      join(SEPARATOR, "explicit"),
+    );
+    const expected = join(SEPARATOR, "explicit", "swamp-extension-review");
+    assert(p.startsWith(expected));
+  } finally {
+    if (prev !== undefined) {
+      Deno.env.set("SWAMP_EXTENSION_REVIEW_DIR", prev);
+    } else {
+      Deno.env.delete("SWAMP_EXTENSION_REVIEW_DIR");
+    }
+  }
+});
+
+Deno.test("reviewReportPath: SWAMP_EXTENSION_REVIEW_DIR used when no explicit baseTmpDir", () => {
+  const prev = Deno.env.get("SWAMP_EXTENSION_REVIEW_DIR");
+  const reviewDir = join(SEPARATOR, "ci", "reviews");
+  try {
+    Deno.env.set("SWAMP_EXTENSION_REVIEW_DIR", reviewDir);
+    const p = reviewReportPath("@acme/thing", "abc123");
+    const expected = join(reviewDir, "swamp-extension-review");
+    assert(p.startsWith(expected));
+  } finally {
+    if (prev !== undefined) {
+      Deno.env.set("SWAMP_EXTENSION_REVIEW_DIR", prev);
+    } else {
+      Deno.env.delete("SWAMP_EXTENSION_REVIEW_DIR");
+    }
+  }
+});
+
+Deno.test("reviewReportPath: falls back to OS temp when env var is unset", () => {
+  const prev = Deno.env.get("SWAMP_EXTENSION_REVIEW_DIR");
+  const ciDir = join(SEPARATOR, "ci");
+  try {
+    Deno.env.delete("SWAMP_EXTENSION_REVIEW_DIR");
+    const p = reviewReportPath("@acme/thing", "abc123");
+    assert(!p.startsWith(ciDir));
+  } finally {
+    if (prev !== undefined) {
+      Deno.env.set("SWAMP_EXTENSION_REVIEW_DIR", prev);
+    }
+  }
 });
 
 Deno.test("parseReviewReport: returns null on malformed JSON or bad shape", () => {

@@ -77,8 +77,13 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
           Math.floor(cols * 0.4),
         );
         const maxVersion = Math.max(
-          ...exts.map((ext) => ext.version.length + 1),
-        ); // +1 for "v" prefix
+          ...exts.map((ext) => {
+            const tag = ext.channel && ext.channel !== "stable"
+              ? ` [${ext.channel}]`
+              : "";
+            return ext.version.length + 1 + tag.length;
+          }),
+        );
         const maxLatest = enriched
           ? Math.max(
             ...exts.map((ext) =>
@@ -92,7 +97,12 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
             ? ext.name.substring(0, maxName - 1) + "…"
             : ext.name;
           const paddedName = name.padEnd(maxName);
-          const paddedVersion = `v${ext.version}`.padEnd(maxVersion);
+          const channelTag = ext.channel && ext.channel !== "stable"
+            ? ` [${ext.channel}]`
+            : "";
+          const paddedVersion = `v${ext.version}${channelTag}`.padEnd(
+            maxVersion,
+          );
           let line = `${paddedName}  ${paddedVersion}`;
           if (enriched) {
             const latestText = ext.latestVersion

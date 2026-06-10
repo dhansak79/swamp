@@ -69,9 +69,10 @@ export interface ExtensionUpdateDeps {
    * construction.
    */
   lockfileRepository: LockfileRepository;
-  /** Get extension info from registry (latest version). */
+  /** Get extension info from registry (latest version in channel). */
   getExtension: (
     name: string,
+    channel?: string,
   ) => Promise<
     {
       latestVersion: string | null;
@@ -89,6 +90,7 @@ export interface ExtensionUpdateDeps {
   installExtension: (
     name: string,
     version: string,
+    channel?: string,
   ) => Promise<InstallResult | undefined>;
 }
 
@@ -100,6 +102,7 @@ export async function createExtensionUpdateDeps(options: {
   installExtension: (
     name: string,
     version: string,
+    channel?: string,
   ) => Promise<InstallResult | undefined>;
 }): Promise<ExtensionUpdateDeps> {
   const extensionClient = new ExtensionApiClient(
@@ -108,8 +111,23 @@ export async function createExtensionUpdateDeps(options: {
   );
   return {
     lockfileRepository: await LockfileRepository.create(options.lockfilePath),
-    getExtension: async (name) => {
+    getExtension: async (name, channel?) => {
       try {
+        if (channel && channel !== "stable") {
+          const versionInfo = await extensionClient.getLatestVersion(
+            name,
+            undefined,
+            channel,
+          );
+          if (!versionInfo) return null;
+          const info = await extensionClient.getExtension(name);
+          return {
+            latestVersion: versionInfo.version,
+            deprecatedAt: info?.deprecatedAt ?? null,
+            deprecationReason: info?.deprecationReason ?? null,
+            supersededBy: info?.supersededBy ?? null,
+          };
+        }
         const info = await extensionClient.getExtension(name);
         if (!info) return null;
         return {
@@ -174,8 +192,9 @@ export async function* extensionUpdate(
       for (const name of targetNames) {
         yield { kind: "checking", name };
         const installedVersion = upstream[name].version;
+        const installedChannel = upstream[name].channel;
 
-        const extInfo = await deps.getExtension(name);
+        const extInfo = await deps.getExtension(name, installedChannel);
         if (!extInfo) {
           statuses.push({
             status: "not_found",
@@ -220,6 +239,7 @@ export async function* extensionUpdate(
             const result = await deps.installExtension(
               s.name,
               s.latestVersion,
+              upstream[s.name]?.channel,
             );
             if (result && result.pruned.length > 0) {
               yield {

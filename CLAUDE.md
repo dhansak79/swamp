@@ -30,37 +30,30 @@ IMPORTANT: Before creating or modifying ANY skill file, you MUST load the
 authoritative guidelines for structure, frontmatter, and progressive disclosure.
 This is a hard prerequisite, not a suggestion.
 
-### Skill structure
+Repo-specific rules on top of skill-creator's guidance:
 
-```
-.claude/skills/<skill-name>/
-├── SKILL.md              (required — uppercase)
-├── references/            (optional — detailed docs loaded on demand)
-└── evals/                 (optional — trigger_evals.json)
-```
+- `SKILL.md` must be uppercase — not `skill.md`.
+- After editing any `.md` file in `.claude/skills/`, run `deno fmt` — skill
+  markdown follows the same formatting rules as all other files in this
+  repository.
 
-### Rules for skill files
+After creating or modifying a skill, verify it before submitting:
 
-- **SKILL.md must be uppercase** — not `skill.md`.
-- **Frontmatter is required** — YAML with `name` and `description` fields only.
-  The `description` is the primary trigger mechanism; include what the skill
-  does AND specific trigger phrases/contexts.
-- **Keep SKILL.md body under 500 lines** — split detailed content into
-  `references/` files and reference them from SKILL.md.
-- **No extraneous files** — no README.md, CHANGELOG.md, INSTALLATION_GUIDE.md,
-  or similar auxiliary docs.
-- **Format after editing** — run `deno fmt` after modifying any `.md` files in
-  `.claude/skills/`. Skill markdown files follow the same formatting rules as
-  all other files in this repository.
+- `npx tessl skill review .claude/skills/<skill-name>` — quality review of the
+  description and content; aim for an average score ≥ 90%. CI enforces that
+  threshold for the bundled skills (`swamp`, `swamp-getting-started`) via
+  `deno run review-skills`; for other skills it is good hygiene, not a gate.
+- `deno run eval-skill-triggers` — promptfoo trigger-routing evals for the
+  bundled skills (needs `ANTHROPIC_API_KEY`); run when a bundled skill's
+  description or `trigger_evals.json` changed.
+
+See `design/skills.md` for the full skill testing pipeline.
 
 ## Code Style
 
 - TypeScript strict mode, no `any` types
 - Use named exports, not default exports
 - Comprehensive unit test coverage
-- All code must pass type checking with `deno check`
-- All code must pass `deno lint`
-- Format all code with `deno fmt`
 - All `.ts` and `.tsx` files must include the AGPLv3 copyright header from
   `FILE-LICENSE-TEMPLATE.md` at the top of the file (as `//` comments). Run
   `deno run license-headers` to add headers to any new files.
@@ -79,28 +72,8 @@ isn't part of the task. Keep the blast radius small.
 
 ## Commands
 
-Use `deno run` to get a complete list of custom tasks.
-
-- `deno run dev`: Run the CLI.
-- `deno run test`: Run the test suite.
-- `deno check`: Type-check the program.
-- `deno lint`: Run lints.
-- `deno fmt`: Format the code.
-
-## Source Control & Pull Requests
-
-- Use the `github-pr` skill to create commit messages and pull requests.
-- PRs are auto-merged after passing CI and Claude review. To prevent auto-merge,
-  add the `hold` label to the PR.
-- After completing work (finishing tasks, merging PRs), run `deno run compile`
-  to recompile swamp.
-- When a PR fixes a GitHub issue filed by an external contributor (not a repo
-  collaborator), add them as a co-author to the commit. Check with
-  `gh api /repos/swamp-club/swamp/collaborators --jq '.[].login'` to determine
-  if the issue author is a team member. If they are not, add
-  `Co-authored-by: Name <email>` to the commit. Use `gh api /users/<username>`
-  to look up their name, and use `<username>@users.noreply.github.com` as the
-  email unless a public email is available from the API response.
+Use `deno run` to get a complete list of custom tasks. `deno run dev` runs the
+CLI.
 
 ## Verification
 
@@ -111,6 +84,19 @@ After completing work, run these checks:
 3. `deno fmt` - Formatting
 4. `deno run test` - Tests
 5. `deno run compile` - Recompile the binary
+
+## Source Control & Pull Requests
+
+- Use the `github-pr` skill to create commit messages and pull requests.
+- PRs are auto-merged after passing CI and Claude review. To prevent auto-merge,
+  add the `hold` label to the PR.
+- When a PR fixes a GitHub issue filed by an external contributor (not a repo
+  collaborator), add them as a co-author to the commit. Check with
+  `gh api /repos/swamp-club/swamp/collaborators --jq '.[].login'` to determine
+  if the issue author is a team member. If they are not, add
+  `Co-authored-by: Name <email>` to the commit. Use `gh api /users/<username>`
+  to look up their name, and use `<username>@users.noreply.github.com` as the
+  email unless a public email is available from the API response.
 
 ## Architecture
 

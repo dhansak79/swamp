@@ -182,7 +182,8 @@ export class InstallExtensionService {
     } catch (error) {
       if (error instanceof DuplicateTypeError) {
         await this.rollbackOnCollision(result, priorEntry, ctx);
-        throw mapDuplicateTypeErrorToUserError(error);
+        const ghostRow = await isGhostRow(error);
+        throw mapDuplicateTypeErrorToUserError(error, ghostRow);
       }
       // Half-state from a non-DuplicateTypeError fault during phase 8.
       // Files + lockfile entry are on disk (the install service does
@@ -444,11 +445,26 @@ async function collectTsFiles(dir: string): Promise<string[]> {
  */
 function mapDuplicateTypeErrorToUserError(
   error: DuplicateTypeError,
+  ghostRow: boolean,
 ): DuplicateTypeUserError {
   return new DuplicateTypeUserError({
     kind: error.kind,
     typeNormalized: error.typeNormalized,
     existing: error.firstSource,
     conflicting: error.secondSource,
+    isGhostRow: ghostRow,
   });
+}
+
+async function isGhostRow(error: DuplicateTypeError): Promise<boolean> {
+  // Only check firstSource (the pre-existing catalog occupant).
+  // secondSource is the extension being installed — its files are
+  // always absent after rollbackOnCollision, so it can never be a
+  // meaningful ghost-row signal.
+  try {
+    await Deno.stat(error.firstSource.canonicalPath);
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) return true;
+  }
+  return false;
 }

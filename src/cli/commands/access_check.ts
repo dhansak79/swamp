@@ -32,6 +32,7 @@ import { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
 import {
+  parseFieldFlags,
   parseResourceFlag,
   validateServerRepoExclusivity,
 } from "./access_helpers.ts";
@@ -55,6 +56,10 @@ export const accessCheckCommand = new Command()
   .example(
     "With simulated IdP groups",
     "swamp access check --subject user:adam --action run --on workflow:@acme/deploy --collectives platform-eng,ops",
+  )
+  .example(
+    "With resource fields for condition evaluation",
+    "swamp access check --subject user:adam --action run --on workflow:@acme/deploy --field tags.env=staging",
   )
   .option(
     "--repo-dir <dir:string>",
@@ -80,6 +85,11 @@ export const accessCheckCommand = new Command()
     "Comma-separated IdP group memberships to simulate",
   )
   .option(
+    "--field <field:string>",
+    "Resource field for condition evaluation (key=value, repeatable)",
+    { collect: true },
+  )
+  .option(
     "--server <url:string>",
     "Check access on a 'swamp serve' server instead of locally",
   )
@@ -90,6 +100,12 @@ export const accessCheckCommand = new Command()
     );
 
     if (options.server) {
+      if (options.field && (options.field as string[]).length > 0) {
+        throw new UserError(
+          "--field is not supported with --server: the server evaluates conditions against its own resource context",
+        );
+      }
+
       const ctx = createContext(options as GlobalOptions, [
         "access",
         "check",
@@ -160,10 +176,11 @@ export const accessCheckCommand = new Command()
       const service = new GrantBasedAccessDecisionService(snapshot);
 
       const accessPrincipal = { principal, collectives };
+      const fields = parseFieldFlags(options.field as string[] | undefined);
       const accessResource = {
         kind: resource.kind,
         name: resource.pattern,
-        fields: {},
+        fields,
       };
 
       const decisions = service.explain(

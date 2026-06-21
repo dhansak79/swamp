@@ -22,6 +22,7 @@ import {
   consumeStream,
   createLibSwampContext,
   workflowSearch,
+  type WorkflowSearchData,
   type WorkflowSearchDeps,
 } from "../../libswamp/mod.ts";
 import {
@@ -37,6 +38,13 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowSearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -65,6 +73,27 @@ export async function workflowSearchAction(
   query?: string,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<WorkflowSearchResponse>(
+      { server, token },
+      {
+        type: "workflow.search",
+        payload: { query },
+      },
+    );
+    const renderer = createWorkflowSearchRenderer(ctx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as WorkflowSearchData,
+    });
+    return;
+  }
   const effectiveMode = interactiveOutputMode(ctx);
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;
@@ -116,14 +145,15 @@ export async function workflowSearchAction(
   ctx.logger.debug("Workflow search command completed");
 }
 
-export const workflowSearchCommand = new Command()
-  .name("search")
-  .description("Search for workflows")
-  .example("Browse all workflows", "swamp workflow search")
-  .example("Search by keyword", "swamp workflow search deploy")
-  .arguments("[query:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(workflowSearchAction);
+export const workflowSearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search for workflows")
+    .example("Browse all workflows", "swamp workflow search")
+    .example("Search by keyword", "swamp workflow search deploy")
+    .arguments("[query:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(workflowSearchAction);

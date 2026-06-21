@@ -25,6 +25,7 @@ import {
   modelGet,
   type ModelGetData,
   modelSearch,
+  type ModelSearchData,
   type ModelSearchDeps,
   type ModelSearchItem,
 } from "../../libswamp/mod.ts";
@@ -36,6 +37,13 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ModelSearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -72,6 +80,28 @@ export async function modelSearchAction(
   query?: string,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, ["model", "search"]);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<ModelSearchResponse>(
+      { server, token },
+      {
+        type: "model.search",
+        payload: { query },
+      },
+    );
+    const renderer = createModelSearchRenderer(ctx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as ModelSearchData,
+    });
+    return;
+  }
+
   const effectiveMode = interactiveOutputMode(ctx);
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching models with query: ${query ?? "(none)"}`;
@@ -106,14 +136,15 @@ export async function modelSearchAction(
   ctx.logger.debug("Model search command completed");
 }
 
-export const modelSearchCommand = new Command()
-  .name("search")
-  .description("Search for model definitions")
-  .example("Browse all models", "swamp model search")
-  .example("Search by keyword", "swamp model search aws")
-  .arguments("[query:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(modelSearchAction);
+export const modelSearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search for model definitions")
+    .example("Browse all models", "swamp model search")
+    .example("Search by keyword", "swamp model search aws")
+    .arguments("[query:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(modelSearchAction);

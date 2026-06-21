@@ -22,6 +22,7 @@ import {
   consumeStream,
   createLibSwampContext,
   reportTypeSearch,
+  type ReportTypeSearchData,
   type ReportTypeSearchDeps,
 } from "../../libswamp/mod.ts";
 import { createReportTypeSearchRenderer } from "../../presentation/renderers/report_type_search.tsx";
@@ -32,6 +33,13 @@ import {
 } from "../context.ts";
 import { getReportTypes } from "../../domain/reports/report_types.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ReportTypeSearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -44,6 +52,28 @@ export async function reportTypeSearchAction(
     "report",
     "type-search",
   ]);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<ReportTypeSearchResponse>(
+      { server, token },
+      {
+        type: "report.type.search",
+        payload: { query },
+      },
+    );
+    const renderer = createReportTypeSearchRenderer(ctx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as ReportTypeSearchData,
+    });
+    return;
+  }
+
   const effectiveMode = interactiveOutputMode(ctx);
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching report types with query: ${query ?? "(none)"}`;
@@ -75,10 +105,11 @@ export async function reportTypeSearchAction(
   ctx.logger.debug("Report type search command completed");
 }
 
-export const reportTypeSearchCommand = new Command()
-  .name("search")
-  .description("Search for report types")
-  .example("Browse report types", "swamp report type search")
-  .example("Search by keyword", "swamp report type search cost")
-  .arguments("[query:string]")
-  .action(reportTypeSearchAction);
+export const reportTypeSearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search for report types")
+    .example("Browse report types", "swamp report type search")
+    .example("Search by keyword", "swamp report type search cost")
+    .arguments("[query:string]"),
+).action(reportTypeSearchAction);

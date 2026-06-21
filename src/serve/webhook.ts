@@ -412,7 +412,13 @@ export class WebhookService {
 
     // Start processing the queue — only store when actually starting
     if (!this.processing) {
-      this.processingPromise = this.processQueue();
+      this.processingPromise = this.processQueue().catch(
+        (error: unknown) => {
+          logger.error("Webhook queue processing failed: {error}", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      );
     }
 
     return Response.json({
@@ -452,7 +458,8 @@ export class WebhookService {
     payload: WebhookPayload,
   ): Promise<void> {
     const controller = new AbortController();
-    this.running.set(workflowIdOrName, controller);
+    const execId = crypto.randomUUID();
+    this.running.set(execId, controller);
 
     try {
       let runId = "";
@@ -501,7 +508,7 @@ export class WebhookService {
         { workflow: workflowIdOrName, error: message },
       );
     } finally {
-      this.running.delete(workflowIdOrName);
+      this.running.delete(execId);
     }
   }
 

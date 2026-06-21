@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertExists } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   deserializeEvent,
   serializeEvent,
@@ -143,7 +143,7 @@ Deno.test("serializeEvent - converts Error instances to plain objects", () => {
   assertEquals(nested.err !== null && typeof nested.err === "object", true);
   const errObj = nested.err as Record<string, unknown>;
   assertEquals(errObj.message, "something broke");
-  assertExists(errObj.stack);
+  assertEquals("stack" in errObj, false);
 });
 
 Deno.test("serializeEvent - handles arrays", () => {

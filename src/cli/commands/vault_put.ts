@@ -47,12 +47,16 @@ import {
 } from "../../infrastructure/io/stdin_reader.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import {
+  normalizeServerUrl,
   requestServerResponse,
   resolveServerToken,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { VaultPutResponse } from "../../serve/protocol.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+
+const vaultLogger = getSwampLogger(["vault", "put"]);
 
 /**
  * Parses a KEY=VALUE string into key and value parts.
@@ -241,6 +245,17 @@ When using --server, the value must be passed as a positional argument or KEY=VA
     if (options.refreshTtl) {
       refreshTtlMs = parseTimeout(options.refreshTtl);
     }
+
+    const wsUrl = normalizeServerUrl(server);
+    const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+    try {
+      const parsed = new URL(wsUrl);
+      if (parsed.protocol === "ws:" && !LOOPBACK_HOSTS.has(parsed.hostname)) {
+        vaultLogger.warn(
+          "Sending secrets over unencrypted connection — use wss:// for security",
+        );
+      }
+    } catch { /* invalid URL handled by normalizeServerUrl */ }
 
     const token = await resolveServerToken(
       server,

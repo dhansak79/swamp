@@ -89,7 +89,10 @@ import {
   RepoMarkerRepository,
 } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
-import { detectSupersededSkills } from "../domain/repo/repo_service.ts";
+import {
+  detectLocalBundledSkills,
+  detectSupersededSkills,
+} from "../domain/repo/repo_service.ts";
 import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
 import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
 import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
@@ -422,6 +425,7 @@ export async function configureExtensionLoaders(
 
   await checkForMissingPulledExtensions(repoDir, marker, deferredWarnings);
   await checkForSupersededSkills(repoDir, marker, deferredWarnings);
+  await checkForLocalBundledSkills(repoDir, marker, deferredWarnings);
 }
 
 /**
@@ -499,7 +503,8 @@ export interface DeferredWarning {
     | "datastore"
     | "report"
     | "extensions"
-    | "skills";
+    | "skills"
+    | "skill-migration";
   file: string;
   error: string;
 }
@@ -910,6 +915,56 @@ async function checkForSupersededSkills(
   }
 }
 
+const SKILL_MIGRATION_WARNING_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+async function checkForLocalBundledSkills(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  deferredWarnings: DeferredWarning[],
+): Promise<void> {
+  try {
+    if (!marker?.tools?.length) return;
+    if (marker.skillMigrationDismissed) return;
+
+    if (marker.lastSkillMigrationWarning) {
+      const lastWarning = new Date(marker.lastSkillMigrationWarning).getTime();
+      if (Date.now() - lastWarning < SKILL_MIGRATION_WARNING_INTERVAL_MS) {
+        return;
+      }
+    }
+
+    const localCopies = await detectLocalBundledSkills(
+      repoDir,
+      marker.tools,
+    );
+    if (localCopies.length === 0) return;
+
+    const dirs = localCopies.map((c) =>
+      c.names.map((n) => `  ${join(c.skillsDir, n)}/`)
+    ).flat();
+
+    deferredWarnings.push({
+      kind: "skill-migration",
+      file: repoDir,
+      error:
+        "Swamp skills are now installed globally but this repo still has local " +
+        "copies that take precedence. Run 'swamp repo upgrade' to clean up.\n\n" +
+        "  Local copies found:\n" +
+        dirs.join("\n"),
+    });
+
+    const repoPath = RepoPath.create(repoDir);
+    const markerRepo = new RepoMarkerRepository();
+    const updatedMarker = {
+      ...marker,
+      lastSkillMigrationWarning: new Date().toISOString(),
+    };
+    await markerRepo.write(repoPath, updatedMarker);
+  } catch {
+    // Non-fatal — don't block startup
+  }
+}
+
 /** Default telemetry endpoint */
 const DEFAULT_TELEMETRY_ENDPOINT = "https://telemetry.swamp-club.com";
 
@@ -1221,7 +1276,10 @@ export async function runCli(args: string[]): Promise<void> {
 
       // Emit deferred warnings now that logging is initialized
       for (const warning of deferredWarnings) {
-        if (warning.kind === "extensions" || warning.kind === "skills") {
+        if (
+          warning.kind === "extensions" || warning.kind === "skills" ||
+          warning.kind === "skill-migration"
+        ) {
           logger.warn`${warning.error}`;
         } else {
           logger

@@ -29,6 +29,7 @@ import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createExtensionInstallRenderer } from "./extension_install.ts";
+import { join } from "@std/path";
 
 /**
  * Renders a `tools` array for the human-readable status line. Empty list
@@ -226,6 +227,18 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
                 `Re-run \`swamp extension pull <name>\` to install ` +
                 `for ${entry.tool}: ${list}`,
             );
+          }
+        }
+
+        if (data.localSkillCopies.length > 0) {
+          logger.warn(
+            "Local swamp skill copies are shadowing the globally " +
+              "installed skills. Delete them manually:",
+          );
+          for (const copy of data.localSkillCopies) {
+            for (const name of copy.names) {
+              logger.warn(`  ${join(copy.skillsDir, name)}`);
+            }
           }
         }
 

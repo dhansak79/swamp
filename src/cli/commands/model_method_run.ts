@@ -40,7 +40,12 @@ import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
 import { GIT_SHA } from "./version.ts";
-import { deepMerge, parseInputs, parseStdinContent } from "../input_parser.ts";
+import {
+  deepMerge,
+  mergeInputArgs,
+  parseInputs,
+  parseStdinContent,
+} from "../input_parser.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import { parseTags } from "../../libswamp/mod.ts";
 import { join } from "@std/path";
@@ -117,6 +122,10 @@ export const modelMethodRunCommand = new Command()
   )
   .option("--input <value:string>", "Input values (key=value or JSON)", {
     collect: true,
+  })
+  .option("--arg <value:string>", "Alias for --input", {
+    collect: true,
+    hidden: true,
   })
   .option(
     "--input-file <file:string>",
@@ -229,9 +238,8 @@ export const modelMethodRunCommand = new Command()
         stdinItems = parseStdinContent(stdinContent);
       }
 
-      // Parse --input overrides (used standalone or merged with stdin items)
       const { inputs: cliInputs } = await parseInputs({
-        input: options.input as string[] | undefined,
+        input: mergeInputArgs(options),
         inputFile: stdinItems
           ? undefined
           : options.inputFile as string | undefined,
@@ -490,7 +498,7 @@ async function runMethodViaServer(
     stdinItems = parseStdinContent(stdinContent);
   }
   const { inputs: cliInputs } = await parseInputs({
-    input: options.input as string[] | undefined,
+    input: mergeInputArgs(options),
     inputFile: stdinItems ? undefined : options.inputFile as string | undefined,
   });
   const runtimeTags = options.tag

@@ -38,7 +38,7 @@ import { createWorkflowEvaluateRenderer } from "../../presentation/renderers/wor
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { extractModelReferencesFromWorkflow } from "../../domain/workflows/model_reference_extractor.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
-import { parseInputs } from "../input_parser.ts";
+import { mergeInputArgs, parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
@@ -64,6 +64,10 @@ export const workflowEvaluateCommand = new Command()
   .option("--input <value:string>", "Input values (key=value or JSON)", {
     collect: true,
   })
+  .option("--arg <value:string>", "Alias for --input", {
+    collect: true,
+    hidden: true,
+  })
   .option("--input-file <file:string>", "Input values from YAML file")
   .action(
     async function (options: AnyOptions, workflowIdOrName?: string) {
@@ -72,9 +76,8 @@ export const workflowEvaluateCommand = new Command()
         "evaluate",
       ]);
 
-      // Parse input values
       const { inputs } = await parseInputs({
-        input: options.input as string[] | undefined,
+        input: mergeInputArgs(options),
         inputFile: options.inputFile as string | undefined,
       });
 

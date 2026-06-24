@@ -45,7 +45,12 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import { deepMerge, parseInputs, parseStdinContent } from "../input_parser.ts";
+import {
+  deepMerge,
+  mergeInputArgs,
+  parseInputs,
+  parseStdinContent,
+} from "../input_parser.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { GIT_SHA } from "./version.ts";
@@ -114,6 +119,10 @@ export const workflowRunCommand = new Command()
   )
   .option("--input <value:string>", "Input values (key=value or JSON)", {
     collect: true,
+  })
+  .option("--arg <value:string>", "Alias for --input", {
+    collect: true,
+    hidden: true,
   })
   .option(
     "--input-file <file:string>",
@@ -198,9 +207,8 @@ export const workflowRunCommand = new Command()
       stdinItems = parseStdinContent(stdinContent);
     }
 
-    // Parse --input overrides (used standalone or merged with stdin items)
     const { inputs: cliInputs } = await parseInputs({
-      input: options.input as string[] | undefined,
+      input: mergeInputArgs(options),
       inputFile: stdinItems
         ? undefined
         : options.inputFile as string | undefined,
@@ -460,7 +468,7 @@ async function runWorkflowViaServer(
     stdinItems = parseStdinContent(stdinContent);
   }
   const { inputs: cliInputs } = await parseInputs({
-    input: options.input as string[] | undefined,
+    input: mergeInputArgs(options),
     inputFile: stdinItems ? undefined : options.inputFile as string | undefined,
   });
   const runtimeTags = options.tag

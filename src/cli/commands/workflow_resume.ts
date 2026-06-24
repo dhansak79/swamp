@@ -52,7 +52,12 @@ import {
 } from "../../libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
 import { GIT_SHA } from "./version.ts";
-import { deepMerge, parseInputs, parseStdinContent } from "../input_parser.ts";
+import {
+  deepMerge,
+  mergeInputArgs,
+  parseInputs,
+  parseStdinContent,
+} from "../input_parser.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
@@ -83,6 +88,10 @@ export const workflowResumeCommand = new Command()
     "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs",
     { collect: true },
   )
+  .option("--arg <value:string>", "Alias for --input", {
+    collect: true,
+    hidden: true,
+  })
   .option(
     "--input-file <file:string>",
     "Override inputs from a YAML file (cannot combine with --stdin)",
@@ -125,7 +134,7 @@ export const workflowResumeCommand = new Command()
       }
 
       const { inputs: cliInputs } = await parseInputs({
-        input: options.input as string[] | undefined,
+        input: mergeInputArgs(options),
         inputFile: stdinContent !== null
           ? undefined
           : options.inputFile as string | undefined,

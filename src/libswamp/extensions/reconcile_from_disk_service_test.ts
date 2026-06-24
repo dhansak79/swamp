@@ -20,6 +20,7 @@
 import { assertEquals, assertGreater } from "@std/assert";
 import { basename as pathBasename, join } from "@std/path";
 import { ensureDir } from "@std/fs";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { ReconcileFromDiskService } from "./reconcile_from_disk_service.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
@@ -937,6 +938,545 @@ Deno.test({
             `#284: all rows must have new version, got ${row.extension_version} for ${row.source_path}`,
           );
         }
+      },
+    );
+  },
+});
+
+// -- Per-subdirectory manifest tests (#784) ----------------------------------
+
+Deno.test({
+  name:
+    "ReconcileFromDisk #784: sibling subdirs with own manifests produce separate aggregates",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const ts = Date.now();
+        const fooDir = join(repoDir, "extensions", "models", "foo");
+        const barDir = join(repoDir, "extensions", "models", "bar");
+        await ensureDir(fooDir);
+        await ensureDir(barDir);
+
+        await Deno.writeTextFile(
+          join(fooDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/foo",
+            version: "2026.06.01.1",
+          }),
+        );
+        await Deno.writeTextFile(
+          join(fooDir, "driver.ts"),
+          MINIMAL_MODEL_CODE(`@test/foo-model-${ts}`),
+        );
+
+        await Deno.writeTextFile(
+          join(barDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/bar",
+            version: "2026.06.01.1",
+          }),
+        );
+        await Deno.writeTextFile(
+          join(barDir, "driver.ts"),
+          MINIMAL_MODEL_CODE(`@test/bar-model-${ts}`),
+        );
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const result = await service.execute();
+        assertEquals(result.applied, true);
+
+        const rows = catalog.findAll();
+        const fooRows = rows.filter((r) => r.extension_name === "@test/foo");
+        const barRows = rows.filter((r) => r.extension_name === "@test/bar");
+
+        assertGreater(
+          fooRows.length,
+          0,
+          "#784: @test/foo must have its own catalog rows",
+        );
+        assertGreater(
+          barRows.length,
+          0,
+          "#784: @test/bar must have its own catalog rows",
+        );
+
+        for (const row of fooRows) {
+          assertEquals(row.extension_version, "2026.06.01.1");
+          assertEquals(
+            row.source_path.includes("/foo/"),
+            true,
+            "#784: @test/foo rows must reference files under foo/",
+          );
+        }
+        for (const row of barRows) {
+          assertEquals(row.extension_version, "2026.06.01.1");
+          assertEquals(
+            row.source_path.includes("/bar/"),
+            true,
+            "#784: @test/bar rows must reference files under bar/",
+          );
+        }
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "ReconcileFromDisk #784: top-level manifest takes precedence over per-subdir manifests",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withManifestFixtureRepo(
+      async ({ repoDir, catalog, makeService }) => {
+        const ts = Date.now();
+        const subDir = join(repoDir, "extensions", "models", "sub");
+        await ensureDir(subDir);
+
+        await Deno.writeTextFile(
+          join(subDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/sub-ext",
+            version: "2026.06.01.1",
+          }),
+        );
+        await Deno.writeTextFile(
+          join(subDir, "driver.ts"),
+          MINIMAL_MODEL_CODE(`@test/sub-model-${ts}`),
+        );
+
+        const topLevelManifest: LocalManifestIdentity = {
+          name: "@test/top-level",
+          version: "2026.06.01.1",
+        };
+        const result = await makeService(topLevelManifest).execute();
+        assertEquals(result.applied, true);
+
+        const rows = catalog.findAll();
+        for (const row of rows) {
+          assertEquals(
+            row.extension_name,
+            "@test/top-level",
+            "#784: top-level manifest must claim all files",
+          );
+        }
+        const subRows = rows.filter((r) =>
+          r.extension_name === "@test/sub-ext"
+        );
+        assertEquals(
+          subRows.length,
+          0,
+          "#784: per-subdir manifest must be ignored when top-level exists",
+        );
+      },
+    );
+  },
+});
+
+Deno.test({
+  name: "ReconcileFromDisk #784: mixed — subdirs with and without manifests",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const ts = Date.now();
+        const manifestedDir = join(
+          repoDir,
+          "extensions",
+          "models",
+          "manifested",
+        );
+        await ensureDir(manifestedDir);
+
+        await Deno.writeTextFile(
+          join(manifestedDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/manifested",
+            version: "2026.06.01.1",
+          }),
+        );
+        await Deno.writeTextFile(
+          join(manifestedDir, "driver.ts"),
+          MINIMAL_MODEL_CODE(`@test/manifested-model-${ts}`),
+        );
+
+        const bareModel = join(repoDir, "extensions", "models", "bare.ts");
+        await Deno.writeTextFile(
+          bareModel,
+          MINIMAL_MODEL_CODE(`@test/bare-model-${ts}`),
+        );
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const result = await service.execute();
+        assertEquals(result.applied, true);
+
+        const rows = catalog.findAll();
+        const manifestedRows = rows.filter((r) =>
+          r.extension_name === "@test/manifested"
+        );
+        const localRows = rows.filter((r) =>
+          r.extension_name === `@local/${pathBasename(repoDir)}`
+        );
+
+        assertGreater(
+          manifestedRows.length,
+          0,
+          "#784: @test/manifested must have its own rows",
+        );
+        assertGreater(
+          localRows.length,
+          0,
+          "#784: bare file must fall back to @local/<repo>",
+        );
+
+        for (const row of manifestedRows) {
+          assertEquals(
+            row.source_path.includes("/manifested/"),
+            true,
+            "#784: manifested rows must reference files under manifested/",
+          );
+        }
+        for (const row of localRows) {
+          assertEquals(
+            row.source_path.includes("bare.ts"),
+            true,
+            "#784: @local/ rows must reference the bare file",
+          );
+        }
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "ReconcileFromDisk #784: migration — old monolithic @local/ aggregate splits into per-manifest aggregates",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const ts = Date.now();
+        const fooDir = join(repoDir, "extensions", "models", "foo");
+        const barDir = join(repoDir, "extensions", "models", "bar");
+        await ensureDir(fooDir);
+        await ensureDir(barDir);
+
+        await Deno.writeTextFile(
+          join(fooDir, "driver.ts"),
+          MINIMAL_MODEL_CODE(`@test/foo-mig-${ts}`),
+        );
+        await Deno.writeTextFile(
+          join(barDir, "driver.ts"),
+          MINIMAL_MODEL_CODE(`@test/bar-mig-${ts}`),
+        );
+
+        // Phase 1: reconcile WITHOUT per-subdir manifests (simulates old
+        // binary). Both files end up under @local/<repo>.
+        const oldService = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const first = await oldService.execute();
+        assertEquals(first.applied, true);
+
+        const oldRows = catalog.findAll();
+        const repoBasename = `@local/${pathBasename(repoDir)}`;
+        for (const row of oldRows) {
+          assertEquals(
+            row.extension_name,
+            repoBasename,
+            "#784 migration: old binary must group under @local/<repo>",
+          );
+        }
+
+        // Phase 2: add per-subdir manifests and reconcile again (simulates
+        // upgrading to the new binary). Old aggregate must be tombstoned,
+        // new per-manifest aggregates must be created.
+        await Deno.writeTextFile(
+          join(fooDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/foo-ext",
+            version: "2026.06.01.1",
+          }),
+        );
+        await Deno.writeTextFile(
+          join(barDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/bar-ext",
+            version: "2026.06.01.1",
+          }),
+        );
+
+        const newRepo = new ExtensionRepository({
+          catalog,
+          lockfileRepository,
+          repoRoot: repoDir,
+        });
+        const newService = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository: newRepo,
+          lockfileRepository,
+          repoDir,
+        });
+        const second = await newService.execute();
+        assertEquals(second.applied, true);
+
+        const newRows = catalog.findAll().filter((r) =>
+          (r.state ?? "Indexed") !== "Tombstoned"
+        );
+        const fooRows = newRows.filter((r) =>
+          r.extension_name === "@test/foo-ext"
+        );
+        const barRows = newRows.filter((r) =>
+          r.extension_name === "@test/bar-ext"
+        );
+        const localRows = newRows.filter((r) =>
+          r.extension_name === repoBasename
+        );
+
+        assertGreater(
+          fooRows.length,
+          0,
+          "#784 migration: @test/foo-ext must exist after migration",
+        );
+        assertGreater(
+          barRows.length,
+          0,
+          "#784 migration: @test/bar-ext must exist after migration",
+        );
+        assertEquals(
+          localRows.length,
+          0,
+          "#784 migration: old @local/<repo> rows must be tombstoned",
+        );
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "ReconcileFromDisk #784: migration with ≥10 sources does not hit guardrail",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const ts = Date.now();
+        const fooDir = join(repoDir, "extensions", "models", "foo");
+        const barDir = join(repoDir, "extensions", "models", "bar");
+        await ensureDir(fooDir);
+        await ensureDir(barDir);
+
+        for (let i = 0; i < 6; i++) {
+          await Deno.writeTextFile(
+            join(fooDir, `model${i}.ts`),
+            MINIMAL_MODEL_CODE(`@test/foo-g-${ts}-${i}`),
+          );
+          await Deno.writeTextFile(
+            join(barDir, `model${i}.ts`),
+            MINIMAL_MODEL_CODE(`@test/bar-g-${ts}-${i}`),
+          );
+        }
+
+        // Phase 1: reconcile without manifests — all 12 files under
+        // @local/<repo>. Exceeds GUARDRAIL_MIN_ROWS (10).
+        const oldService = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const first = await oldService.execute();
+        assertEquals(first.applied, true);
+        assertEquals(catalog.findAll().length, 12);
+
+        // Phase 2: add manifests and reconcile. The migration must NOT
+        // be blocked by the >50% guardrail.
+        await Deno.writeTextFile(
+          join(fooDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/foo-guard",
+            version: "2026.06.01.1",
+          }),
+        );
+        await Deno.writeTextFile(
+          join(barDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/bar-guard",
+            version: "2026.06.01.1",
+          }),
+        );
+
+        const newRepo = new ExtensionRepository({
+          catalog,
+          lockfileRepository,
+          repoRoot: repoDir,
+        });
+        const newService = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository: newRepo,
+          lockfileRepository,
+          repoDir,
+        });
+        const second = await newService.execute();
+        assertEquals(
+          second.applied,
+          true,
+          "#784: migration with ≥10 sources must not be blocked by guardrail",
+        );
+
+        const liveRows = catalog.findAll().filter((r) =>
+          (r.state ?? "Indexed") !== "Tombstoned"
+        );
+        const fooRows = liveRows.filter((r) =>
+          r.extension_name === "@test/foo-guard"
+        );
+        const barRows = liveRows.filter((r) =>
+          r.extension_name === "@test/bar-guard"
+        );
+
+        assertEquals(
+          fooRows.length,
+          6,
+          "#784: @test/foo-guard must have 6 rows",
+        );
+        assertEquals(
+          barRows.length,
+          6,
+          "#784: @test/bar-guard must have 6 rows",
+        );
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "ReconcileFromDisk #784: partial manifest adoption with ≥10 sources does not hit guardrail",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const ts = Date.now();
+        const fooDir = join(repoDir, "extensions", "models", "foo");
+        const barDir = join(repoDir, "extensions", "models", "bar");
+        await ensureDir(fooDir);
+        await ensureDir(barDir);
+
+        for (let i = 0; i < 5; i++) {
+          await Deno.writeTextFile(
+            join(fooDir, `model${i}.ts`),
+            MINIMAL_MODEL_CODE(`@test/foo-p-${ts}-${i}`),
+          );
+          await Deno.writeTextFile(
+            join(barDir, `model${i}.ts`),
+            MINIMAL_MODEL_CODE(`@test/bar-p-${ts}-${i}`),
+          );
+        }
+        // 2 loose files that stay in @local/<repo>
+        for (let i = 0; i < 2; i++) {
+          await Deno.writeTextFile(
+            join(repoDir, "extensions", "models", `loose${i}.ts`),
+            MINIMAL_MODEL_CODE(`@test/loose-p-${ts}-${i}`),
+          );
+        }
+
+        // Phase 1: all 12 files under @local/<repo>.
+        const oldService = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const first = await oldService.execute();
+        assertEquals(first.applied, true);
+        assertEquals(catalog.findAll().length, 12);
+
+        // Phase 2: add manifests to foo/ and bar/ only — loose files
+        // remain in the default partition (partial adoption).
+        await Deno.writeTextFile(
+          join(fooDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/foo-partial",
+            version: "2026.06.01.1",
+          }),
+        );
+        await Deno.writeTextFile(
+          join(barDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/bar-partial",
+            version: "2026.06.01.1",
+          }),
+        );
+
+        const newRepo = new ExtensionRepository({
+          catalog,
+          lockfileRepository,
+          repoRoot: repoDir,
+        });
+        const newService = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository: newRepo,
+          lockfileRepository,
+          repoDir,
+        });
+        const second = await newService.execute();
+        assertEquals(
+          second.applied,
+          true,
+          "#784: partial adoption with ≥10 sources must not be blocked by guardrail",
+        );
+
+        const liveRows = catalog.findAll().filter((r) =>
+          (r.state ?? "Indexed") !== "Tombstoned"
+        );
+        const fooRows = liveRows.filter((r) =>
+          r.extension_name === "@test/foo-partial"
+        );
+        const barRows = liveRows.filter((r) =>
+          r.extension_name === "@test/bar-partial"
+        );
+        const localRows = liveRows.filter((r) =>
+          r.extension_name === `@local/${pathBasename(repoDir)}`
+        );
+
+        assertEquals(
+          fooRows.length,
+          5,
+          "#784: @test/foo-partial must have 5 rows",
+        );
+        assertEquals(
+          barRows.length,
+          5,
+          "#784: @test/bar-partial must have 5 rows",
+        );
+        assertEquals(
+          localRows.length,
+          2,
+          "#784: loose files must remain under @local/<repo>",
+        );
       },
     );
   },
